@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>WAVE — проверка плеера</title>
+<style>
+  :root{color-scheme:dark;font-family:system-ui,sans-serif;background:#101218;color:#f4f5fa}
+  body{max-width:560px;margin:auto;padding:32px 20px}h1{letter-spacing:.18em;color:#a2ecdf}
+  .card{background:#1c202b;border-radius:20px;padding:24px;margin:20px 0}
+  button{background:#a2ecdf;color:#101218;border:0;border-radius:12px;padding:14px 18px;font:inherit;cursor:pointer;margin:4px}
+  button.secondary{background:#303747;color:white}audio{width:100%;margin:16px 0}
+  p,small{color:#bec5d5;line-height:1.6}li{padding:8px}li.active{color:#a2ecdf;font-weight:bold}
+  pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;max-height:260px;overflow:auto}
+</style>
+<h1>WAVE</h1>
+<p>Проверка воспроизведения внутри Mini App</p>
+<div class="card">
+  <small>Синтезированные тестовые мелодии · по 12 секунд</small>
+  <h2 id="title">Мелодия 1</h2>
+  <audio id="player" controls preload="metadata" playsinline src="./audio/0.wav"></audio>
+  <div><button id="play">Слушать</button><button id="next" class="secondary">Следующий</button></div>
+  <ol id="queue"><li class="active">Мелодия 1</li><li>Мелодия 2</li></ol>
+  <label><input type="checkbox" id="repeat"> Повторять очередь</label>
+  <p id="status" role="status" aria-live="polite">Готов к запуску</p>
+</div>
+<p>Нажмите «Слушать», затем заблокируйте iPhone на 20 секунд. Проверьте, продолжилось ли звучание и началась ли вторая мелодия. Отдельно повторите со сворачиванием Telegram.</p>
+<p>Это эксперимент: работа в фоне ещё не подтверждена. Журнал фиксирует события браузера, а не доказывает, что звук был слышен.</p>
+<div class="card"><h3>Журнал проверки</h3><button class="secondary" id="save">Скачать журнал</button><pre id="log"></pre></div>
+<script>
+  const player=document.querySelector('#player'), status=document.querySelector('#status');
+  let current=0, records=[];
+  function log(event){
+    records.push({at:new Date().toISOString(),event,track:current+1,position:+player.currentTime.toFixed(2),visibility:document.visibilityState});
+    records=records.slice(-500);
+    document.querySelector('#log').textContent=records.slice(-35).map(r=>`${r.at} | ${r.event} | трек ${r.track} | ${r.position}с | ${r.visibility}`).join('\n');
+  }
+  async function play(){try{await player.play()}catch(e){status.textContent='Воспроизведение не запущено. Нажмите «Слушать».';log('play rejected: '+e.name)}}
+  function select(index,autoplay){
+    current=index;player.src=`./audio/${index}.wav`;
+    document.querySelector('#title').textContent=`Мелодия ${index+1}`;
+    document.querySelectorAll('#queue li').forEach((el,i)=>el.classList.toggle('active',i===index));
+    if('mediaSession' in navigator && 'MediaMetadata' in window){
+      navigator.mediaSession.metadata=new MediaMetadata({title:`Тестовая мелодия ${index+1}`,artist:'WAVE'});
+    }
+    log('selected');if(autoplay)play();
+  }
+  function next(){select((current+1)%2,true)}
+  document.querySelector('#play').onclick=()=>player.paused?play():player.pause();
+  document.querySelector('#next').onclick=next;
+  for(const event of ['play','playing','pause','ended','waiting','stalled','error','seeking','seeked']){
+    player.addEventListener(event,()=>{
+      log(event);
+      document.querySelector('#play').textContent=player.paused?'Слушать':'Пауза';
+      if(event==='playing')status.textContent='Воспроизводится';
+      if(event==='pause')status.textContent='Пауза';
+      if(event==='error')status.textContent='Ошибка загрузки аудио';
+      if(event==='ended'){
+        if(current===0||document.querySelector('#repeat').checked)next();
+        else status.textContent='Очередь завершена';
+      }
+    });
+  }
+  document.addEventListener('visibilitychange',()=>log('visibilitychange'));
+  window.addEventListener('pagehide',()=>log('pagehide'));
+  if('mediaSession' in navigator){
+    for(const [action,handler] of Object.entries({play,pause:()=>player.pause(),nexttrack:next,previoustrack:()=>select(0,true)})){
+      try{navigator.mediaSession.setActionHandler(action,handler)}catch(e){log('unsupported '+action)}
+    }
+  }
+  document.querySelector('#save').onclick=()=>{
+    const url=URL.createObjectURL(new Blob([JSON.stringify({userAgent:navigator.userAgent,records},null,2)],{type:'application/json'}));
+    const a=document.createElement('a');a.href=url;a.download='wave-playback-test.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+  };
+  select(0,false);
+</script>
+</html>
