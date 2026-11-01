@@ -34,3 +34,4 @@ for attempt in range(1, 3):
         print(f'Запрос {attempt}: HTTP {response.status}; заголовки за {headers_ms:.0f} мс; '
               f'{len(chunk)} байт за {(time.monotonic()-start)*1000:.0f} мс')
         print('Этапы backend:', response.headers.get('Server-Timing', 'нет данных — обновите WAVE'))
+        print('Файловый кэш:', response.headers.get('X-Wave-Cache', 'не используется'))

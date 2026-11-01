@@ -131,6 +131,20 @@ async function route(request, env) {
     const artwork = url.pathname === '/api/artwork';
     const ticket = await readTicket(env, url.searchParams.get('ticket'));
     if ((ticket.type || 'audio') !== (artwork ? 'artwork' : 'audio')) throw new ApiError(401, 'Ссылка не подходит для этого файла.');
+    const audioCache = artwork ? null : env.AUDIO_CACHE;
+    const cacheKey = `${env.BOT_TOKEN}:${ticket.file}`;
+    const range = request.headers.get('Range');
+    if (!prepare && audioCache) {
+      const started=performance.now();
+      try {
+        const cached=await audioCache.responseIfPresent(cacheKey,range);
+        if(cached) {
+          cached.headers.set('Server-Timing',`telegram_file;dur=0, cache_headers;dur=${(performance.now()-started).toFixed(1)}`);
+          cached.headers.set('X-Accel-Buffering','no');
+          return cached;
+        }
+      }catch{/* A cache failure falls back to the authenticated Telegram route. */}
+    }
     const lookupStart = performance.now();
     const file = await getFile(env, ticket.file);
     const lookupMs = performance.now()-lookupStart;
@@ -138,16 +152,32 @@ async function route(request, env) {
     if (typeof file.file_path !== 'string' || !/^[a-zA-Z0-9_./-]+$/.test(file.file_path) || file.file_path.includes('..') || file.file_path.startsWith('/')) {
       throw new ApiError(502, 'Telegram не предоставил путь аудиофайла.');
     }
-    if (prepare) return Response.json({ready:true});
+    const fileUrl=`https://api.telegram.org/file/bot${env.BOT_TOKEN}/${file.file_path}`;
+    if (prepare) {
+      if(audioCache) {
+        try {return Response.json(await audioCache.prepare(cacheKey,fileUrl,file.file_size));}
+        catch{return Response.json({ready:false,downloading:false});}
+      }
+      return Response.json({ready:true});
+    }
+    if(audioCache) {
+      const started=performance.now();
+      try {
+        const response=await audioCache.stream(cacheKey,fileUrl,file.file_size,range);
+        response.headers.set('Server-Timing',`telegram_file;dur=${lookupMs.toFixed(1)}, cache_headers;dur=${(performance.now()-started).toFixed(1)}`);
+        response.headers.set('X-Accel-Buffering','no');
+        return response;
+      }catch{/* Keep playback available if disk caching cannot be used. */}
+    }
     const headers = new Headers();
-    const range = request.headers.get('Range');
+    headers.set('Accept-Encoding','identity');
     if (range) {
       if (!/^bytes=\d*-\d*$/.test(range) || range === 'bytes=-') throw new ApiError(416, 'Некорректный диапазон.');
       headers.set('Range', range);
     }
     let upstream;
     const streamStart = performance.now();
-    try { upstream = await fetch(`https://api.telegram.org/file/bot${env.BOT_TOKEN}/${file.file_path}`, {headers, redirect: 'error', signal: AbortSignal.timeout(30000)}); }
+    try { upstream = await fetch(fileUrl, {headers, redirect: 'error', signal: AbortSignal.timeout(30000)}); }
     catch { throw new ApiError(502, 'Не удалось загрузить аудио из Telegram.'); }
     if (![200, 206, 416].includes(upstream.status)) throw new ApiError(502, 'Аудиофайл сейчас недоступен.');
     const out = new Headers();
@@ -156,6 +186,8 @@ async function route(request, env) {
     }
     out.set('Content-Type', artwork ? 'image/jpeg' : upstream.headers.get('Content-Type') || 'application/octet-stream');
     out.set('Server-Timing', `telegram_file;dur=${lookupMs.toFixed(1)}, telegram_headers;dur=${(performance.now()-streamStart).toFixed(1)}`);
+    out.set('X-Accel-Buffering','no');
+    if(!artwork)out.set('X-Wave-Cache','BYPASS');
     if (artwork && upstream.status === 200) out.set('Cache-Control', `private, max-age=${Math.min(60, Math.max(0, ticket.exp-now()))}`);
     return new Response(upstream.body, {status: upstream.status, headers: out});
   }

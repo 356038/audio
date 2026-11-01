@@ -92,10 +92,8 @@ function syncSelection() {
   });
   syncControls();
 }
-function prepareNext() {
-  if (current < 0 || navigator.connection?.saveData || document.visibilityState === 'hidden') return;
-  let index = tracks.findIndex((track,i) => i>current && track.playable);
-  if (index < 0 && $('#repeat').checked) index = tracks.findIndex(track => track.playable);
+function prepareTrack(index) {
+  if (navigator.connection?.saveData || document.visibilityState === 'hidden') return;
   const track = tracks[index];
   if (!track?.stream_url || index === current || prepared.has(track.stream_url)) return;
   const url = new URL(track.stream_url);
@@ -105,9 +103,17 @@ function prepareNext() {
   const timer = setTimeout(()=>controller.abort(),20000);
   url.pathname = '/api/prepare';
   prepared.add(track.stream_url);
-  fetch(url,{signal:controller.signal,cache:'no-store'}).then(response=>{
-    if(!response.ok)prepared.delete(track.stream_url);
+  fetch(url,{signal:controller.signal,cache:'no-store'}).then(async response=>{
+    if(!response.ok){prepared.delete(track.stream_url);return;}
+    const state=await response.json();
+    if(state.ready===false&&!state.downloading)prepared.delete(track.stream_url);
   }).catch(()=>prepared.delete(track.stream_url)).finally(()=>clearTimeout(timer));
+}
+function prepareNext() {
+  if(current<0)return;
+  let index=tracks.findIndex((track,i)=>i>current&&track.playable);
+  if(index<0&&$('#repeat').checked)index=tracks.findIndex(track=>track.playable);
+  prepareTrack(index);
 }
 function syncControls() {
   const playing = current >= 0 && !player.paused && !player.ended;
@@ -208,7 +214,10 @@ async function loadProfile(append=false) {
     tracks.push(...result.tracks);nextOffset=result.next_offset;
     $('#library-status').textContent=result.total_count?`Загружено ${tracks.length} из ${result.total_count}. Поиск — по загруженным трекам.`:'Добавь музыку в свой профиль Telegram и обнови коллекцию.';
   }catch(error){$('#library-status').textContent=error instanceof TypeError||error.name==='TimeoutError'?'Сервис недоступен. Попробуйте ещё раз.':error.message;}
-  finally{busy=false;render();}
+  finally{
+    busy=false;render();
+    if(current<0)prepareTrack(tracks.findIndex(track=>track.playable));
+  }
 }
 $('#profile').onclick=()=>loadProfile();
 $('#play-all').onclick=()=>{const first=tracks.findIndex(track=>track.playable);if(first>=0){select(first,true);openPlayer();}};

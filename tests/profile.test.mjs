@@ -1,6 +1,10 @@
 import test, {afterEach} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHmac} from 'node:crypto';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {AudioCache} from '../audio-cache.mjs';
 import api, {authenticate, clearFileCache} from '../telegram-api.mjs';
 
 const BOT_TOKEN = '123456:unit-test-only';
@@ -154,4 +158,28 @@ test('failed file lookups are not cached and unsigned preparation is rejected', 
   assert.equal(calls,2);
   assert.equal((await api.fetch(new Request(`${origin}/api/prepare`),env)).status,401);
   assert.equal(calls,2);
+});
+test('authenticated preparation fills the disk cache, and cached streams skip Telegram',async()=>{
+  const directory=await mkdtemp(join(tmpdir(),'wave-api-cache-'));
+  const cache=new AudioCache(directory);
+  try {
+    globalThis.fetch=async()=>ok({total_count:1,audios:[{file_id:'disk-song',file_unique_id:'id',file_size:4}]});
+    const {tracks}=await(await api.fetch(request({init_data:initData()}),env)).json();
+    let lookups=0,downloads=0;
+    globalThis.fetch=async url=>{
+      if(url.endsWith('/getFile')){lookups++;return ok({file_path:'music/disk.mp3',file_size:4});}
+      downloads++;return new Response(new Uint8Array([1,2,3,4]),{headers:{'Content-Type':'audio/mpeg','Content-Length':'4'}});
+    };
+    const configured={...env,AUDIO_CACHE:cache};
+    const prepared=await api.fetch(new Request(tracks[0].stream_url.replace('/api/stream','/api/prepare')),configured);
+    assert.equal(prepared.status,200);
+    await Promise.all([...cache.entries.values()].map(entry=>entry.task).filter(Boolean));
+    clearFileCache();
+    const cached=await api.fetch(new Request(tracks[0].stream_url,{headers:{Range:'bytes=1-2'}}),configured);
+    assert.equal(cached.status,206);assert.equal(cached.headers.get('X-Wave-Cache'),'HIT');
+    assert.equal(cached.headers.get('X-Accel-Buffering'),'no');
+    assert.deepEqual([...new Uint8Array(await cached.arrayBuffer())],[2,3]);
+    assert.equal(lookups,1);assert.equal(downloads,1);
+    assert.equal((await api.fetch(new Request(`${origin}/api/stream?ticket=invalid`),configured)).status,401);
+  }finally{await cache.close();await rm(directory,{recursive:true,force:true});}
 });

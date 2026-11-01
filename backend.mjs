@@ -5,6 +5,9 @@ import {fileURLToPath} from 'node:url';
 import {Readable} from 'node:stream';
 import {pipeline} from 'node:stream/promises';
 import api from './telegram-api.mjs';
+import {AudioCache} from './audio-cache.mjs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 
 export function createServer(env = process.env) {
   const publicOrigin = env.FRONTEND_ORIGIN;
@@ -15,7 +18,9 @@ export function createServer(env = process.env) {
     ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
     ['/theme.css', ['theme.css', 'text/css; charset=utf-8']],
   ]);
-  return http.createServer(async (req, res) => {
+  const cache = env.WAVE_CACHE_DISABLED === '1' ? null : new AudioCache(
+    env.WAVE_CACHE_DIR || join(env.STATE_DIRECTORY || tmpdir(), 'wave-audio-cache'));
+  const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, publicOrigin);
       if (url.origin !== publicOrigin) {res.writeHead(400); res.end(); return;}
@@ -39,15 +44,18 @@ export function createServer(env = process.env) {
       const response = await api.fetch(new Request(url, {
         method: req.method, headers: req.headers,
         body: ['GET', 'HEAD'].includes(req.method) ? undefined : Buffer.concat(chunks),
-      }), {...env, FRONTEND_ORIGIN: publicOrigin});
+      }), {...env, FRONTEND_ORIGIN: publicOrigin, AUDIO_CACHE:cache});
       res.writeHead(response.status, Object.fromEntries(response.headers));
       if (response.body) await pipeline(Readable.fromWeb(response.body), res);
       else res.end();
     } catch {
-      if (!res.headersSent) res.writeHead(500, {'Content-Type': 'application/json'});
+      if (res.headersSent) {res.destroy();return;}
+      res.writeHead(500, {'Content-Type': 'application/json'});
       res.end(JSON.stringify({error: 'Сервис временно недоступен.'}));
     }
   });
+  server.once('close',()=>cache?.close().catch(()=>{}));
+  return server;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

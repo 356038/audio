@@ -42,14 +42,33 @@ the seasonal appearance, then restart only WAVE. Halloween is the default.
 ```sh
 node tests/profile.test.mjs
 node tests/http.test.mjs
+node tests/audio-cache.test.mjs
 ```
 
 The profile tests use fake Telegram responses, not real user files. Real API
 availability and profile privacy must still be checked with the deployed bot.
 Cloud Bot API downloads are capped at 20 MiB here; oversized files are shown as
-unavailable. Streaming forwards Range requests; seek support also depends on
-Telegram's upstream response. No permanent audio cache is kept. The loaded queue
+unavailable. The private disk cache serves byte ranges locally, including while a file is
+still downloading. Audio is retained up to two hours with cleanup every minute,
+with a total budget of 256 MiB and at most three simultaneous cache downloads.
+Only signed requests can read audio; the cache is not a public static directory. The loaded queue
 is finite; pagination requires “Load more”. Refresh the library after signed
 playback links expire or reopen the app after its one-hour login window expires.
 
 No persistent user accounts, subscription billing or public catalogue are added.
+
+## Updating an existing service for the audio cache
+
+Install `deploy/cache.conf` as `/etc/systemd/system/wave.service.d/cache.conf`,
+then run `systemctl daemon-reload` and restart only WAVE. It adds a private
+`StateDirectory=wave`, writable under the existing hardening settings. The
+server stores audio in `$STATE_DIRECTORY/wave-audio-cache`. If no state directory
+is configured, the fallback is the service-private temporary directory.
+`WAVE_CACHE_DIR` can override the location; do not point it at a shared folder.
+`WAVE_CACHE_DISABLED=1` disables the disk cache for troubleshooting. If cache
+storage fails, playback falls back to the Telegram proxy.
+
+Run `python3 scripts/check-audio.py` after playing a track to measure two local
+Range requests. `HIT` means a completed local file, `FILL` means progressive
+download, and `BYPASS` means the direct Telegram fallback. No tokens or signed
+URLs are printed. Local measurements exclude the phone's network.
