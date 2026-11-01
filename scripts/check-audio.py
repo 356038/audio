@@ -1,6 +1,7 @@
 """Measure the latest WAVE audio request locally without printing private URLs."""
 import re
 import time
+import json
 import urllib.error
 import urllib.request
 from collections import deque
@@ -29,6 +30,11 @@ for attempt in range(1, 3):
     with response:
         headers_ms = (time.monotonic()-start)*1000
         if response.status not in (200, 206):
+            if 'application/json' in response.headers.get('Content-Type', ''):
+                try:
+                    message=json.loads(response.read(4000)).get('error')
+                    if isinstance(message,str):print('Ответ backend:',message)
+                except (ValueError,AttributeError):pass
             raise SystemExit(f'HTTP {response.status}. Заново откройте Mini App, включите трек и повторите проверку.')
         chunk = response.read(65536)
         print(f'Запрос {attempt}: HTTP {response.status}; заголовки за {headers_ms:.0f} мс; '

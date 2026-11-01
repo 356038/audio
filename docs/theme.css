@@ -66,3 +66,5 @@ body.player-open{overflow:hidden}.track-dialog{width:min(100% - 40px,520px);max-
 @media(max-height:700px){.full-player{padding-top:12px;padding-bottom:18px}.full-header{margin-bottom:16px}.full-artwork{max-width:min(300px,40dvh)}.full-track-meta{margin-top:18px}.full-track-meta h2{font-size:20px}.seek-area{margin-top:14px}.full-controls{margin-top:14px}.full-controls .playback-button{width:60px;height:60px}.full-footer{margin-top:18px}}
 @media(max-width:360px){.full-player{padding-left:24px;padding-right:24px}.player-dock .now-meta h2{max-width:135px}.dock-equalizer{display:none}.full-track-meta h2{font-size:20px}}
 @media(prefers-reduced-motion:reduce){.equalizer i{animation:none!important}.dock-progress:before{transition:none}}
+
+.full-status{font-size:11px;line-height:1.5;color:var(--muted);text-align:center;min-height:17px;margin:18px 0 0}.full-status+.full-footer{margin-top:15px}

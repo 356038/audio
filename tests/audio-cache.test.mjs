@@ -92,3 +92,20 @@ test('metadata cannot exceed the disk reservation and concurrency is bounded',as
     upstream.enqueue(bytes.slice(2));upstream.close();await complete(cache);
   });
 });
+test('tail metadata requests do not wait for the full sequential audio download',async()=>{
+  const content=new Uint8Array(200000).fill(7);let writer,rangeCalls=0;
+  await fixture({fetcher:async(url,options)=>{
+    if(options.headers.Range){
+      rangeCalls++;assert.equal(options.headers.Range,'bytes=199000-199999');
+      return new Response(content.slice(199000),{status:206,headers:{'Content-Range':'bytes 199000-199999/200000'}});
+    }
+    return new Response(new ReadableStream({start(c){writer=c;c.enqueue(content.slice(0,2000));}}),{headers:{'Content-Length':'200000','Content-Type':'audio/mp4'}});
+  }},async cache=>{
+    const tail=await cache.stream('tail','https://example.invalid/song.m4a',content.length,'bytes=199000-199999');
+    assert.equal(tail.headers.get('X-Wave-Cache'),'RANGE');
+    assert.equal((await tail.arrayBuffer()).byteLength,1000);
+    assert.equal([...cache.entries.values()][0].complete,false);
+    assert.equal(rangeCalls,1);
+    writer.enqueue(content.slice(2000));writer.close();await complete(cache);
+  });
+});

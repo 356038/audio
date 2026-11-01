@@ -72,7 +72,7 @@ export class AudioCache {
     // Recheck after asynchronous cleanup so parallel requests share one writer.
     const id=this.hash(key), raced=this.entries.get(id);if(raced)return raced;
     if(this.downloads>=this.maxDownloads||this.reserved+reserved>this.maxBytes||this.entries.size>=this.maxEntries)throw Error('Audio cache is busy');
-    const entry={id,reserved,size:reserved,created:Date.now(),touched:Date.now(),bytes:0,complete:false,users:0,waiters:new Set(),controller:new AbortController()};
+    const entry={id,url,reserved,size:reserved,created:Date.now(),touched:Date.now(),bytes:0,complete:false,users:0,waiters:new Set(),controller:new AbortController()};
     this.entries.set(id,entry);this.reserved+=reserved;this.downloads++;
     let readyResolve,readyReject;
     entry.ready=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});entry.ready.catch(()=>{});
@@ -124,6 +124,18 @@ export class AudioCache {
       if(match[1]){start=Number(match[1]);if(match[2])end=Math.min(end,Number(match[2]));}
       else{const suffix=Number(match[2]);start=Math.max(0,entry.size-suffix);if(!suffix)start=entry.size;}
       if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start>end||start>=entry.size){entry.users--;return this.invalidRange(entry.size);}
+    }
+    // M4A and some other formats need metadata from the end of the file.
+    // Do not force that small request to wait for a sequential full download.
+    if(range&&!entry.complete&&entry.url&&start>entry.bytes+64*1024) {
+      try {
+        const upstream=await this.fetcher(entry.url,{headers:{Range:`bytes=${start}-${end}`,'Accept-Encoding':'identity'},redirect:'error',signal:AbortSignal.timeout(30000)});
+        if(upstream.status===206&&upstream.headers.get('Content-Range')===`bytes ${start}-${end}/${entry.size}`) {
+          entry.users--;
+          return new Response(upstream.body,{status:206,headers:{'Content-Type':entry.mime,'Content-Length':String(end-start+1),'Content-Range':`bytes ${start}-${end}/${entry.size}`,'Accept-Ranges':'bytes','X-Wave-Cache':'RANGE','Cache-Control':'no-store'}});
+        }
+        await upstream.body?.cancel();
+      }catch{/* A server without usable ranges keeps the sequential path. */}
     }
     const headers=new Headers({'Content-Type':entry.mime,'Content-Length':String(end-start+1),'Accept-Ranges':'bytes','X-Wave-Cache':entry.complete?'HIT':'FILL','Cache-Control':'no-store'});
     if(range)headers.set('Content-Range',`bytes ${start}-${end}/${entry.size}`);

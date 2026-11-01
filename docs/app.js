@@ -7,6 +7,7 @@ const halloween = window.WAVE_THEME !== 'default';
 document.documentElement.dataset.theme = halloween ? 'halloween' : 'default';
 let tracks = [], current = -1, nextOffset = null, busy = false, seeking = false;
 let actuallyPlaying = false;
+let selectionVersion=0, playAttempt=0, errorController=null;
 let warmController = null;
 const prepared = new Set();
 telegram?.ready();
@@ -130,20 +131,53 @@ function syncControls() {
   });
   $('#full-repeat').setAttribute('aria-pressed', String($('#repeat').checked));
 }
+function statusElement() {return $('#status');}
+function setStatus(message) {statusElement().textContent=message;}
+new MutationObserver(()=>{$('#full-status').textContent=$('#status').textContent;}).observe($('#status'),{childList:true,characterData:true,subtree:true});
+async function showMediaError(version=selectionVersion) {
+  if(current<0||version!==selectionVersion)return;
+  const code=player.error?.code;
+  setStatus('Проверяем доступность трека…');
+  errorController?.abort();const controller=new AbortController();errorController=controller;
+  const timer=setTimeout(()=>controller.abort(),15000);
+  try {
+    const response=await fetch(tracks[current].stream_url,{headers:{Range:'bytes=0-1'},cache:'no-store',signal:controller.signal});
+    let message;
+    if(!response.ok&&response.headers.get('Content-Type')?.includes('application/json')) {
+      const result=await response.json();message=result.error;
+    }else {
+      await response.body?.cancel();
+      if(!response.ok)message=`Не удалось загрузить трек (HTTP ${response.status}). Попробуйте ещё раз.`;
+      else if(code===4)message='Формат этого трека не поддерживается плеером на вашем устройстве.';
+      else if(code===3)message='Не удалось декодировать этот аудиофайл.';
+      else message='Загрузка аудио прервалась. Нажмите Play, чтобы повторить.';
+    }
+    if(version===selectionVersion&&player.paused)setStatus(message||'Трек сейчас недоступен. Попробуйте позже.');
+  }catch {
+    if(version===selectionVersion&&player.paused)setStatus('Не удалось проверить трек. Проверьте подключение и попробуйте ещё раз.');
+  }finally{clearTimeout(timer);}
+}
 async function play() {
-  if (current < 0) return;
-  try { await player.play(); }
-  catch { $('#status').textContent = 'Не удалось запустить трек. Попробуйте ещё раз или обновите коллекцию.'; }
-  syncControls();
+  if(current<0)return;
+  const version=selectionVersion,attempt=++playAttempt;
+  try {await player.play();}
+  catch(error) {
+    if(version!==selectionVersion||attempt!==playAttempt||error.name==='AbortError')return;
+    if(error.name==='NotAllowedError')setStatus('Нажмите Play, чтобы начать воспроизведение.');
+    else if(!errorController||errorController.signal.aborted)await showMediaError(version);
+  }
+  if(version===selectionVersion)syncControls();
 }
 function togglePlayback() {
   if (player.paused) play();
-  else { player.pause(); actuallyPlaying=false; syncControls(); }
+  else { playAttempt++;player.pause(); actuallyPlaying=false; syncControls(); }
 }
 function select(index, autoplay) {
   const track = tracks[index];
   if (!track?.playable) return;
+  selectionVersion++;playAttempt++;errorController?.abort();errorController=null;seeking=false;
   actuallyPlaying = false; current = index; player.src = track.stream_url;
+  setStatus('Загружаем трек…');
   $('.player-dock').classList.add('has-track');
   $('#title').textContent = track.title; $('#performer').textContent = track.performer || 'Музыка профиля';
   $('#full-title').textContent = track.title; $('#full-performer').textContent = track.performer || 'Неизвестный исполнитель';
@@ -164,7 +198,7 @@ function next(manual = true) {
     const index = candidate % tracks.length;
     if (tracks[index].playable) { select(index, true); return; }
   }
-  $('#status').textContent = nextOffset === null ? 'Очередь завершена' : 'Загруженная очередь завершена. Нажмите «Загрузить ещё».';
+  statusElement().textContent = nextOffset === null ? 'Очередь завершена' : 'Загруженная очередь завершена. Нажмите «Загрузить ещё».';
 }
 function previous() {
   if (player.currentTime > 3) { player.currentTime = 0; updateProgress(); return; }
@@ -192,13 +226,14 @@ function updateProgress() {
   $('.dock-progress').style.setProperty('--progress', progress);
 }
 function reset() {
+  selectionVersion++;playAttempt++;errorController?.abort();errorController=null;
   warmController?.abort();prepared.clear();
   closePlayer(); player.pause(); player.removeAttribute('src'); player.load(); tracks=[]; current=-1; nextOffset=null; actuallyPlaying=false;
   $('#title').textContent = 'Поймай свою волну'; $('#performer').textContent = 'Выбери трек из коллекции';
   $('#next').disabled=true; $('#open-player').disabled=true; $('#search').value='';
   $('.now-art').querySelectorAll('img').forEach(image=>image.remove()); $('.now-art').classList.remove('has-artwork');
   if ('mediaSession' in navigator) navigator.mediaSession.metadata = null;
-  $('#status').textContent='Готов к воспроизведению'; $('.player-dock').classList.remove('has-track'); render();
+  statusElement().textContent='Готов к воспроизведению'; $('.player-dock').classList.remove('has-track'); render();
 }
 async function loadProfile(append=false) {
   if (busy) return;
@@ -237,11 +272,11 @@ $('#seek').onchange=()=>{if(Number.isFinite(player.duration))player.currentTime=
 for(const event of ['timeupdate','loadedmetadata','durationchange','seeked','emptied'])player.addEventListener(event,updateProgress);
 for(const event of ['play','playing','pause','ended','waiting','stalled','error']) {
   player.addEventListener(event,()=>{
-    if(event==='playing'){actuallyPlaying=true;$('#status').textContent='Воспроизводится';prepareNext();}
+    if(event==='playing'){errorController?.abort();errorController=null;actuallyPlaying=true;statusElement().textContent='Воспроизводится';prepareNext();}
     if(['pause','ended','waiting','stalled','error'].includes(event))actuallyPlaying=false;
-    if(event==='pause')$('#status').textContent='Пауза';
-    if(event==='waiting')$('#status').textContent='Загружаем трек…';
-    if(event==='error'&&current>=0)$('#status').textContent='Не удалось загрузить трек. Обновите коллекцию и попробуйте снова.';
+    if(event==='pause')statusElement().textContent='Пауза';
+    if(event==='waiting')statusElement().textContent='Загружаем трек…';
+    if(event==='error'&&current>=0)showMediaError();
     syncControls();if(event==='ended')next(false);
   });
 }
