@@ -72,20 +72,33 @@ function upstreamError(status){
   if(status===429)return new AudiusError(429,'Достигнут лимит поиска. Попробуйте немного позже.');
   return new AudiusError(502,'Музыкальный сервис временно недоступен.');
 }
-export async function searchAudius(env,{query,offset=0,count=20}={}){
+async function trackList(env,path,params,count){
   configuration(env);
-  if(typeof query!=='string'||!query.trim()||query.length>200||!Number.isInteger(offset)||offset<0||offset>10000)throw new AudiusError(400,'Введите название трека или исполнителя (до 200 символов).');
-  const response=await audiusFetch(apiUrl(env,'/tracks/search',{query:query.trim(),limit:String(count),offset:String(offset)}),{},env);
+  const response=await audiusFetch(apiUrl(env,path,params),{},env);
   if(!response.ok){await response.body?.cancel();throw upstreamError(response.status);}
   let result;try{const raw=await response.text();if(raw.length>2*1024*1024)throw Error();result=JSON.parse(raw);}catch{throw new AudiusError(502,'Не удалось прочитать результаты поиска.');}
   if(!Array.isArray(result.data))throw new AudiusError(502,'Сервис вернул некорректные результаты.');
   const items=result.data.slice(0,count).filter(t=>t&&typeof t.id==='string'&&/^[a-zA-Z0-9]+$/.test(t.id)).map(t=>{
     const gated=Boolean(t.is_stream_gated),playable=!gated&&t.is_streamable!==false;
     let artwork=null;for(const key of ['480x480','150x150','1000x1000']){try{if(t.artwork?.[key]){artwork=checkedUrl(t.artwork[key]).href;break;}}catch{}}
-    return {id:'audius:'+t.id,track_id:t.id,title:typeof t.title==='string'?t.title.slice(0,1000):'Без названия',performer:typeof t.user?.name==='string'?t.user.name.slice(0,1000):'',genre:typeof t.genre==='string'?t.genre.slice(0,100):'',duration:Number.isFinite(t.duration)?Math.max(0,t.duration):0,playable,unavailable_reason:playable?null:gated?'Трек требует отдельного доступа в Audius.':'Трек недоступен для воспроизведения.',artwork_url:artwork,mime:'audio/mpeg'};
+    const tags=typeof t.tags==='string'?[...new Set(t.tags.split(',').map(tag=>tag.trim().toLowerCase().slice(0,64)).filter(Boolean))].slice(0,20):[];
+    return {id:'audius:'+t.id,track_id:t.id,title:typeof t.title==='string'?t.title.slice(0,1000):'Без названия',performer:typeof t.user?.name==='string'?t.user.name.slice(0,1000):'',genre:typeof t.genre==='string'?t.genre.slice(0,100):'',
+      mood:typeof t.mood==='string'?t.mood.slice(0,100):'',tags,bpm:Number.isFinite(t.bpm)&&t.bpm>=30&&t.bpm<=300?t.bpm:null,
+      duration:Number.isFinite(t.duration)?Math.max(0,t.duration):0,playable,unavailable_reason:playable?null:gated?'Трек требует отдельного доступа в Audius.':'Трек недоступен для воспроизведения.',artwork_url:artwork,mime:'audio/mpeg'};
   });
   const total=Number.isSafeInteger(result.total)?result.total:Number.isSafeInteger(result.count)?result.count:null;
-  return {items,total_count:total,next_offset:result.data.length>=count?offset+result.data.length:null};
+  return {items,total_count:total,received:result.data.length};
+}
+export async function searchAudius(env,{query,offset=0,count=20}={}){
+  configuration(env);
+  if(typeof query!=='string'||!query.trim()||query.length>200||!Number.isInteger(offset)||offset<0||offset>10000)throw new AudiusError(400,'Введите название трека или исполнителя (до 200 символов).');
+  const result=await trackList(env,'/tracks/search',{query:query.trim(),limit:String(count),offset:String(offset)},count);
+  return {items:result.items,total_count:result.total_count,next_offset:result.received>=count?offset+result.received:null};
+}
+export async function genreAudius(env,genre,count=40){
+  if(typeof genre!=='string'||!genre.trim()||genre.length>100)throw new AudiusError(400,'Некорректный жанр.');
+  // Official genre-filtered discovery, not a free-text query containing the genre.
+  return (await trackList(env,'/tracks/trending',{genre:genre.trim(),time:'week',limit:String(count)},count)).items;
 }
 export function registerAudiusTrack(user,track,env){
   const now=Date.now();for(const[id,r]of references)if(r.exp<=now)references.delete(id);

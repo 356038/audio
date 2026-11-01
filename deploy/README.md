@@ -46,6 +46,7 @@ node tests/http.test.mjs
 node tests/audio-cache.test.mjs
 node tests/audius.test.mjs
 node tests/personal.test.mjs
+node tests/i18n.test.mjs
 ```
 
 The profile tests use fake Telegram responses, not real user files. Real API

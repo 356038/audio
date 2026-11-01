@@ -5,7 +5,7 @@ import {mkdtemp,rm,stat} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {PersonalStore} from '../personal-store.mjs';
-import {recommendations} from '../recommendations.mjs';
+import {recommendations,styleSimilarity} from '../recommendations.mjs';
 import api from '../telegram-api.mjs';
 const bot='123:personal-fixture',origin='https://wave.example';
 const originalFetch=globalThis.fetch;
@@ -87,16 +87,56 @@ test('saved Audius descriptors regenerate stream tickets after a process restart
 test('recommendations use history, rank related artists, exclude heard/saved/gated tracks and invalidate after saving',async()=>{
  const store=new PersonalStore(':memory:');let calls=0;const queries=[];
  const env={AUDIUS_API_KEY:'recommendations-fixture',AUDIUS_BEARER_TOKEN:'fixture',AUDIUS_HTTP:async url=>{
-  calls++;queries.push(url.searchParams.get('query'));
+  calls++;queries.push(url.pathname.endsWith('/trending')?'genre:'+url.searchParams.get('genre'):url.searchParams.get('query'));
   return Response.json({data:[song('A1'),song('A2'),song('A3'),song('A4','Other','Pop'),song('A5','Artist','Electronic',{is_stream_gated:true})]});
  }};
  try{
   const empty=await recommendations(env,42,store);assert.equal(empty.personalized,false);assert.equal(calls,0);
   store.record(42,descriptor,'session-123456789',20);store.save(42,{...descriptor,id:'audius:A2',track_id:'A2'},true);
-  const result=await recommendations(env,42,store);assert.deepEqual(queries.sort(),['Artist','Electronic']);assert.deepEqual(result.items.map(t=>t.id),['audius:A3','audius:A4']);assert.equal(result.history_count,1);
+  const result=await recommendations(env,42,store);assert.deepEqual(queries.sort(),['Artist','genre:Electronic']);assert.deepEqual(result.items.map(t=>t.id),['audius:A3']);assert.equal(result.history_count,1);
   await recommendations(env,42,store);assert.equal(calls,2);
   store.save(42,{...descriptor,id:'audius:A3',track_id:'A3'},true);
-  const changed=await recommendations(env,42,store);assert.deepEqual(changed.items.map(t=>t.id),['audius:A4']);assert.equal(calls,4);
+  const changed=await recommendations(env,42,store);assert.deepEqual(changed.items.map(t=>t.id),[]);assert.equal(calls,4);
   assert.equal((await recommendations(env,99,store)).personalized,false);assert.equal(calls,4);
+ }finally{store.close();}
+});
+
+
+test('style recommendations mix familiar artists with related discoveries, never title-only matches',async()=>{
+ const store=new PersonalStore(':memory:');const calls=[];
+ const played={...descriptor,title:'Мало',performer:'Favourite band',genre:'Hip-Hop/Rap',mood:'Chill',tags:['lofi','jazzy'],bpm:90};
+ const candidate=(id,artist,genre,extra={})=>song(id,artist,genre,extra);
+ const similar=candidate('S1','New artist','Hip-Hop/Rap',{title:'Completely different title',mood:'Chill',tags:'lofi,jazzy',bpm:92});
+ const lessSimilar=candidate('S2','Another artist','Hip-Hop/Rap',{mood:'Energetic',tags:'hardcore',bpm:150});
+ const namedOnly=candidate('BAD','Unrelated artist','Rock',{title:'Мало'});
+ const familiar=Array.from({length:8},(_,i)=>candidate('F'+i,'Favourite band','Pop',{title:'Different '+i}));
+ const env={AUDIUS_API_KEY:'style-fixture',AUDIUS_BEARER_TOKEN:'fixture',AUDIUS_HTTP:async url=>{
+  calls.push(url);
+  if(url.pathname.endsWith('/trending')){
+   assert.equal(url.searchParams.get('genre'),'Hip-Hop/Rap');assert.equal(url.searchParams.has('query'),false);
+   return Response.json({data:[lessSimilar,similar,namedOnly]});
+  }
+  assert.equal(url.searchParams.get('query'),'Favourite band');return Response.json({data:[...familiar,namedOnly]});
+ }};
+ try{
+  store.record(42,played,'style-session-123456',20);
+  const result=await recommendations(env,42,store),ids=result.items.map(t=>t.id);
+  assert.equal(calls.length,2);assert.ok(ids.includes('audius:F0'));assert.ok(ids.includes('audius:S1'));assert.ok(ids.includes('audius:S2'));assert.ok(!ids.includes('audius:BAD'));
+  assert.ok(ids.indexOf('audius:S1')<ids.indexOf('audius:S2'),'mood/tags/tempo should improve style ranking');
+  assert.equal(result.items.filter(t=>t.performer==='Favourite band').length,3,'one artist cannot fill the recommendation list');
+  assert.equal(styleSimilarity({...played,title:'Other'},played),styleSimilarity(played,played),'titles cannot affect similarity');
+  assert.equal(styleSimilarity({...played,genre:'Rock'},played),0);
+ }finally{store.close();}
+});
+
+test('missing style metadata uses verified artist matches without inventing a genre',async()=>{
+ const store=new PersonalStore(':memory:');const env={AUDIUS_API_KEY:'no-style-fixture',AUDIUS_BEARER_TOKEN:'fixture',AUDIUS_HTTP:async url=>{
+  assert.ok(url.pathname.endsWith('/search'));
+  return Response.json({data:[song('A3'),song('BAD','Other artist','Pop',{title:'Artist'})]});
+ }};
+ try{
+  store.record(42,{...descriptor,genre:''},'no-style-session-1234',20);
+  const result=await recommendations(env,42,store);
+  assert.deepEqual(result.items.map(t=>t.id),['audius:A3']);assert.match(result.reason,/не указан жанр/);
  }finally{store.close();}
 });

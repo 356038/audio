@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHmac} from 'node:crypto';
 import api from '../telegram-api.mjs';
-import {searchAudius,audiusFetch,isPublicAddress} from '../audius.mjs';
+import {searchAudius,genreAudius,audiusFetch,isPublicAddress} from '../audius.mjs';
 const base='https://wave.example',bot='123:bot-test-only';
 const basic={BOT_TOKEN:bot,AUDIUS_API_KEY:'public-fixture',AUDIUS_BEARER_TOKEN:'bearer-fixture'};
 const song={id:'Ab12',title:'Fixture track',duration:42,user:{name:'Fixture artist'},is_streamable:true,is_stream_gated:false};
@@ -67,4 +67,15 @@ test('pagination does not invent a total, and JSON/HTML/HLS do not become MP3',a
  for(const type of ['application/json','text/html','application/vnd.apple.mpegurl']) {
   await assert.rejects(audiusFetch('https://api.audius.co/v1/tracks/Ab12/stream',{}, {...basic,AUDIUS_HTTP:async()=>new Response('not audio',{headers:{'Content-Type':type}})}),error=>error.status===409);
  }
+});
+
+
+test('genre discovery uses a genre filter and preserves available style metadata',async()=>{
+ const env={...basic,AUDIUS_HTTP:async url=>{
+  assert.equal(url.pathname,'/v1/tracks/trending');assert.equal(url.searchParams.get('genre'),'Electronic');assert.equal(url.searchParams.get('time'),'week');assert.equal(url.searchParams.has('query'),false);
+  return ok([{...song,genre:'Electronic',mood:'Chill',bpm:128,tags:' house,deep,house,  '},{...song,id:'B1',bpm:'not-a-number'}]);
+ }};
+ const items=await genreAudius(env,'Electronic');
+ assert.equal(items[0].mood,'Chill');assert.equal(items[0].bpm,128);assert.deepEqual(items[0].tags,['house','deep']);assert.equal(items[1].bpm,null);
+ await assert.rejects(genreAudius(env,''),error=>error.status===400);
 });

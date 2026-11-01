@@ -18,6 +18,7 @@ export function createServer(env = process.env) {
     ['/', ['index.html', 'text/html; charset=utf-8']],
     ['/index.html', ['index.html', 'text/html; charset=utf-8']],
     ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
+    ['/i18n.js', ['i18n.js', 'text/javascript; charset=utf-8']],
     ['/theme.css', ['theme.css', 'text/css; charset=utf-8']],
   ]);
   const cache = env.WAVE_CACHE_DISABLED === '1' ? null : new AudioCache(

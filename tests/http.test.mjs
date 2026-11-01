@@ -18,6 +18,7 @@ test('VPS server serves the app, configured endpoint, theme and protected API', 
     assert.ok(config.includes('https://wave.example'));
     assert.ok(!config.includes('123:local-test'));
     assert.equal((await fetch(base+'/app.js')).status,200);
+    assert.equal((await fetch(base+'/i18n.js')).status,200);
     const css = await fetch(base+'/theme.css');
     assert.equal(css.status,200);
     assert.ok((await css.text()).includes('halloween'));

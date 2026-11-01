@@ -2,6 +2,9 @@
 const $ = selector => document.querySelector(selector);
 const player = $('#player');
 const telegram = window.Telegram?.WebApp;
+const language=WaveI18n.resolveLanguage(telegram?.initDataUnsafe?.user?.language_code,navigator.language);
+const t=(source,params)=>WaveI18n.translate(language,source,params);
+WaveI18n.localizeDocument(language,document);
 const apiBase = (window.WAVE_API_BASE || '').replace(/\/$/, '');
 const halloween = window.WAVE_THEME !== 'default';
 $('#tab-catalog').hidden=window.WAVE_SEARCH_CONFIGURED!==true;
@@ -43,23 +46,23 @@ function syncTelegramLayout(){
       if(Number.isFinite(value)&&value>=0)document.documentElement.style.setProperty(`--tg-${name}-area-inset-${edge}`,`${value}px`);
     }
   }
-  scheduleSearchLayout();
+  scheduleSearchLayout(true);
 }
 function requestAppFullscreen(manual=false){
   if(!fullscreenSupported||telegram.isFullscreen)return;
   try{telegram.requestFullscreen();}
-  catch{if(manual)toast('Telegram не включил полный экран. Попробуйте обновить приложение Telegram.');}
+  catch{if(manual)toast(t('Telegram не включил полный экран. Попробуйте обновить приложение Telegram.'));}
 }
 $('#fullscreen').onclick=()=>requestAppFullscreen(true);
 for(const event of ['fullscreenChanged','safeAreaChanged','contentSafeAreaChanged'])telegram?.onEvent?.(event,syncTelegramLayout);
 telegram?.onEvent?.('fullscreenFailed',()=>{$('#fullscreen').hidden=!fullscreenSupported;});
 if (halloween) {
-  $('#hero-title').replaceChildren(document.createTextNode('Звучит'), document.createElement('br'));
-  const accent = document.createElement('span'); accent.textContent = 'до мурашек.'; $('#hero-title').append(accent);
-  $('.hero-description').textContent = 'Твоя музыка. Тёмная сторона. Включай — эта ночь на повторе.';
+  $('#hero-title').replaceChildren(document.createTextNode(t('Звучит')), document.createElement('br'));
+  const accent = document.createElement('span'); accent.textContent = t('до мурашек.'); $('#hero-title').append(accent);
+  $('.hero-description').textContent = t('Твоя музыка. Тёмная сторона. Включай — эта ночь на повторе.');
   $('.edition').textContent = 'Halloween edition / 01';
-  $('#play-all').lastChild.textContent = 'Включить ночь';
-  document.title = 'WAVE — звучит до мурашек';
+  $('#play-all').lastChild.textContent = t('Включить ночь');
+  document.title = t('WAVE — звучит до мурашек');
 }
 function duration(seconds) {
   seconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
@@ -97,12 +100,12 @@ function render() {
     li.dataset.index = index;
     button.type = 'button'; button.className = `track${sameTrack(track) ? ' active' : ''}`;
     button.disabled = !track.playable;
-    button.setAttribute('aria-label', `Открыть ${track.title}${track.performer ? ' — '+track.performer : ''}`);
+    button.setAttribute('aria-label', t('Открыть {track}',{track:track.title+(track.performer?' — '+track.performer:'')}));
     const art = document.createElement('span'); art.className = 'track-art'; art.style.setProperty('--cover', covers[index % covers.length]); art.setAttribute('aria-hidden','true');
     art.append(icon('i-note')); addArtwork(art, track);
     const copy = document.createElement('span'); copy.className = 'track-copy';
     const title = document.createElement('span'); title.className = 'track-title'; title.textContent = track.title;
-    detail.className = 'track-detail'; detail.textContent = [track.performer || 'Неизвестный исполнитель', track.playable ? '' : track.unavailable_reason || 'Файл превышает лимит Telegram'].filter(Boolean).join(' · ');
+    detail.className = 'track-detail'; detail.textContent = [track.performer || t('Неизвестный исполнитель'), track.playable ? '' : t(track.unavailable_reason) || t('Файл превышает лимит Telegram')].filter(Boolean).join(' · ');
     const time = document.createElement('span'); time.className = 'track-duration'; time.textContent = duration(track.duration);
     copy.append(title, detail); button.append(art, copy, time, equalizer());
     button.onclick = () => { if (!sameTrack(track)||player.error) select(index, true); openPlayer(); };
@@ -115,7 +118,7 @@ function render() {
   $('#track-count').textContent = String(tracks.length);
   $('#play-all').disabled = !tracks.some(track => track.playable);
   $('#empty-state').hidden = visibleCount > 0 || busy;
-  $('#empty-message').textContent = viewError || (view==='catalog' ? (libraries.catalog.loaded ? 'По этому запросу ничего не найдено.' : 'Введи название трека или исполнителя.') : query ? 'Ничего не нашлось. Попробуй другой запрос.' : view==='saved'?'Добавляй треки кнопкой «+» — они останутся в WAVE.':view==='for-you'?(libraries['for-you'].reason||'Послушай несколько треков — мы подберём музыку для тебя.'):'Здесь будут треки из твоего профиля Telegram.');
+  $('#empty-message').textContent = t(viewError || (view==='catalog' ? (libraries.catalog.loaded ? t('По этому запросу ничего не найдено.') : t('Введи название трека или исполнителя.')) : query ? t('Ничего не нашлось. Попробуй другой запрос.') : view==='saved'?t('Добавляй треки кнопкой «+» — они останутся в WAVE.'):view==='for-you'?(libraries['for-you'].reason||t('Послушай несколько треков — мы подберём музыку для тебя.')):t('Здесь будут треки из твоего профиля Telegram.')));
   $('#more').hidden = nextOffset === null;
   $('#more').disabled = busy;
   $('#profile').disabled = busy;
@@ -158,24 +161,24 @@ function syncControls() {
   document.documentElement.classList.toggle('is-playing', actuallyPlaying && playing);
   for (const id of ['#play','#full-play']) {
     const button = $(id); button.replaceChildren(icon(playing ? 'i-pause' : 'i-play'));
-    button.setAttribute('aria-label', playing ? 'Пауза' : 'Воспроизвести');
+    button.setAttribute('aria-label', playing ? t('Пауза') : t('Воспроизвести'));
     button.disabled = current < 0;
   }
   document.querySelectorAll('.row-play').forEach(button => {
     const active = sameTrack(tracks[Number(button.dataset.index)]) && playing;
     button.replaceChildren(icon(active ? 'i-pause' : 'i-play'));
-    button.setAttribute('aria-label', `${active ? 'Пауза' : 'Воспроизвести'}: ${tracks[Number(button.dataset.index)].title}`);
+    button.setAttribute('aria-label', `${active ? t('Пауза') : t('Воспроизвести')}: ${tracks[Number(button.dataset.index)].title}`);
   });
   $('#full-repeat').setAttribute('aria-pressed', String($('#repeat').checked));
   syncSaveButtons();
 }
 function statusElement() {return $('#status');}
-function setStatus(message) {statusElement().textContent=message;}
+function setStatus(message) {statusElement().textContent=t(message);}
 new MutationObserver(()=>{$('#full-status').textContent=$('#status').textContent;}).observe($('#status'),{childList:true,characterData:true,subtree:true});
 async function showMediaError(version=selectionVersion) {
   if(current<0||version!==selectionVersion)return;
   const code=player.error?.code;
-  setStatus('Проверяем доступность трека…');
+  setStatus(t('Проверяем доступность трека…'));
   errorController?.abort();const controller=new AbortController();errorController=controller;
   const timer=setTimeout(()=>controller.abort(),15000);
   try {
@@ -185,14 +188,14 @@ async function showMediaError(version=selectionVersion) {
       const result=await response.json();message=result.error;
     }else {
       await response.body?.cancel();
-      if(!response.ok)message=`Не удалось загрузить трек (HTTP ${response.status}). Попробуйте ещё раз.`;
-      else if(code===4)message='Формат этого трека не поддерживается плеером на вашем устройстве.';
-      else if(code===3)message='Не удалось декодировать этот аудиофайл.';
-      else message='Загрузка аудио прервалась. Нажмите Play, чтобы повторить.';
+      if(!response.ok)message=t('Не удалось загрузить трек (HTTP {status}). Попробуйте ещё раз.',{status:response.status});
+      else if(code===4)message=t('Формат этого трека не поддерживается плеером на вашем устройстве.');
+      else if(code===3)message=t('Не удалось декодировать этот аудиофайл.');
+      else message=t('Загрузка аудио прервалась. Нажмите Play, чтобы повторить.');
     }
-    if(version===selectionVersion&&player.paused)setStatus(message||'Трек сейчас недоступен. Попробуйте позже.');
+    if(version===selectionVersion&&player.paused)setStatus(message||t('Трек сейчас недоступен. Попробуйте позже.'));
   }catch {
-    if(version===selectionVersion&&player.paused)setStatus('Не удалось проверить трек. Проверьте подключение и попробуйте ещё раз.');
+    if(version===selectionVersion&&player.paused)setStatus(t('Не удалось проверить трек. Проверьте подключение и попробуйте ещё раз.'));
   }finally{clearTimeout(timer);}
 }
 async function play() {
@@ -201,7 +204,7 @@ async function play() {
   try {await player.play();}
   catch(error) {
     if(version!==selectionVersion||attempt!==playAttempt||error.name==='AbortError')return;
-    if(error.name==='NotAllowedError')setStatus('Нажмите Play, чтобы начать воспроизведение.');
+    if(error.name==='NotAllowedError')setStatus(t('Нажмите Play, чтобы начать воспроизведение.'));
     else if(!errorController||errorController.signal.aborted)await showMediaError(version);
   }
   if(version===selectionVersion)syncControls();
@@ -216,11 +219,11 @@ function select(index, autoplay,collection=tracks) {
   selectionVersion++;playAttempt++;errorController?.abort();errorController=null;seeking=false;
   actuallyPlaying = false; queue=collection;current = index; player.src = track.stream_url;
   listenSession={id:crypto.randomUUID(),track,seconds:0,previousTime:0,previousWall:performance.now(),recorded:false,pending:false,attempts:0,retryAt:0};
-  setStatus('Загружаем трек…');
+  setStatus(t('Загружаем трек…'));
   $('.player-dock').classList.add('has-track');
-  $('#title').textContent = track.title; $('#performer').textContent = track.performer || 'Музыка профиля';
-  $('#full-queue-title').textContent=track.source==='audius'?'Результаты поиска Audius':'Моя коллекция';
-  $('#full-title').textContent = track.title; $('#full-performer').textContent = track.performer || 'Неизвестный исполнитель';
+  $('#title').textContent = track.title; $('#performer').textContent = track.performer || t('Музыка профиля');
+  $('#full-queue-title').textContent=track.source==='audius'?t('Результаты поиска Audius'):t('Моя коллекция');
+  $('#full-title').textContent = track.title; $('#full-performer').textContent = track.performer || t('Неизвестный исполнитель');
   $('.now-art').querySelectorAll('img').forEach(image=>image.remove()); $('.now-art').classList.remove('has-artwork');
   $('#full-artwork').querySelectorAll('img').forEach(image=>image.remove()); $('#full-artwork').classList.remove('has-artwork');
   addArtwork($('.now-art'), track);
@@ -239,7 +242,7 @@ function next(manual = true) {
     if (queue[index].playable) { select(index, true,queue); return; }
   }
   const more=queue===libraries.profile.tracks?libraries.profile.next:queue===libraries.catalog.tracks?libraries.catalog.next:null;
-  statusElement().textContent = more === null ? 'Очередь завершена' : 'Загруженная очередь завершена. Нажмите «Загрузить ещё».';
+  statusElement().textContent = more === null ? t('Очередь завершена') : t('Загруженная очередь завершена. Нажмите «Загрузить ещё».');
 }
 function previous() {
   if (player.currentTime > 3) { player.currentTime = 0; updateProgress(); return; }
@@ -255,7 +258,7 @@ function openPlayer() {
 }
 function closePlayer() { if ($('#now-playing-dialog').open) $('#now-playing-dialog').close(); }
 $('#now-playing-dialog').addEventListener('close',()=>{document.body.classList.remove('player-open');telegram?.BackButton?.hide();});
-telegram?.BackButton?.onClick(closePlayer);
+telegram?.BackButton?.onClick(()=>{if($('#settings-dialog').open)$('#settings-dialog').close();else closePlayer();});
 function updateProgress() {
   const total = Number.isFinite(player.duration) ? player.duration : selectedTrack()?.duration || 0;
   const position = Number.isFinite(player.currentTime) ? player.currentTime : 0;
@@ -270,45 +273,45 @@ function updateProgress() {
 function cancelRequests() {
   requestVersion++;requestController?.abort();requestController=null;clearTimeout(searchTimer);busy=false;
 }
-const viewNames={saved:'Моя музыка',profile:'Из профиля Telegram',catalog:'Найти музыку','for-you':'Для вас'};
+const viewNames={saved:t('Моя музыка'),profile:t('Из профиля Telegram'),catalog:t('Найти музыку'),'for-you':t('Для вас')};
 function describeLibrary(){
   const library=libraries[view];
-  $('#library-status').textContent=library.reason||(!library.loaded?(view==='catalog'?'Поиск музыки в Audius.':'Загружаем…')
-    :view==='catalog'?(Number.isInteger(library.total)?`Найдено ${library.total}. Показано ${library.tracks.length}.`:`Показано ${library.tracks.length} результатов Audius.`)
-    :view==='saved'?`Сохранено в WAVE: ${library.total}. Профиль Telegram не изменяется.`
-    :view==='for-you'?'На основе последних треков, которые играли в WAVE.'
-    :`Загружено ${library.tracks.length} из ${library.total}.`);
+  $('#library-status').textContent=t(library.reason)||(!library.loaded?(view==='catalog'?t('Поиск музыки в Audius.'):t('Загружаем…'))
+    :view==='catalog'?(Number.isInteger(library.total)?t('Найдено {total}. Показано {loaded}.',{total:library.total,loaded:library.tracks.length}):t('Показано {loaded} результатов Audius.',{loaded:library.tracks.length}))
+    :view==='saved'?t('Сохранено в WAVE: {total}. Профиль Telegram не изменяется.',{total:library.total})
+    :view==='for-you'?t('На основе последних треков, которые играли в WAVE.')
+    :t('Загружено {loaded} из {total}.',{loaded:library.tracks.length,total:library.total}));
 }
 function switchView(target){
   if(target===view)return;
   libraries[view].query=$('#search').value;cancelRequests();view=target;viewError='';
   const library=libraries[view];tracks=library.tracks;nextOffset=library.next;$('#search').value=library.query;
   $('#library-title').textContent=viewNames[view];
-  $('#search').placeholder=view==='catalog'?'Название трека или исполнитель':'Трек или исполнитель';
-  $('#search').setAttribute('aria-label',view==='catalog'?'Поиск музыки в Audius':'Поиск по загруженной музыке');
+  $('#search').placeholder=view==='catalog'?t('Название трека или исполнитель'):t('Трек или исполнитель');
+  $('#search').setAttribute('aria-label',view==='catalog'?t('Поиск музыки в Audius'):t('Поиск по загруженной музыке'));
   $('#search-submit').hidden=view!=='catalog';
   for(const name of Object.keys(libraries))$('#tab-'+name).setAttribute('aria-selected',String(view===name));
-  $('#profile').setAttribute('aria-label',view==='catalog'?'Повторить поиск':'Обновить '+viewNames[view]);
+  $('#profile').setAttribute('aria-label',view==='catalog'?t('Повторить поиск'):t('Обновить {section}',{section:viewNames[view]}));
   $('#tracks').setAttribute('aria-label',viewNames[view]);describeLibrary();render();
   if(!library.loaded&&(view!=='catalog'||library.query.trim()))loadLibrary(view);
 }
 async function loadLibrary(source,append=false) {
   if(source!==view)return;
   const query=$('#search').value.trim();
-  if(source==='catalog'&&!query){viewError='';$('#library-status').textContent='Введи название трека или исполнителя.';render();return;}
+  if(source==='catalog'&&!query){viewError='';$('#library-status').textContent=t('Введи название трека или исполнителя.');render();return;}
   cancelRequests();viewError='';
   const version=requestVersion,controller=new AbortController();requestController=controller;
   const library=libraries[source];
   if(!append){library.tracks=[];library.next=null;library.loaded=false;library.query=source==='catalog'?query:$('#search').value;tracks=library.tracks;nextOffset=null;}
-  if(!apiBase||!telegram?.initData){viewError=!apiBase?'Сервис пока недоступен.':'Откройте WAVE кнопкой приложения у @wave_audio_player_bot.';$('#library-status').textContent=viewError;render();return;}
-  busy=true;render();$('#library-status').textContent=source==='catalog'?'Ищем музыку в Audius…':'Собираем твою коллекцию…';
+  if(!apiBase||!telegram?.initData){viewError=!apiBase?t('Сервис пока недоступен.'):t('Откройте WAVE кнопкой приложения у @wave_audio_player_bot.');$('#library-status').textContent=t(viewError);render();return;}
+  busy=true;render();$('#library-status').textContent=source==='catalog'?t('Ищем музыку в Audius…'):t('Собираем твою коллекцию…');
   const timer=setTimeout(()=>controller.abort(),30000);
   try {
     const endpoints={catalog:'/api/search',profile:'/api/profile-audios',saved:'/api/library','for-you':'/api/recommendations'};
     const response=await fetch(`${apiBase}${endpoints[source]}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({init_data:telegram.initData,offset:append?library.next:0,...(source==='catalog'?{query}:{})}),signal:controller.signal});
     const result=await response.json();
-    if(!response.ok)throw new Error(result.error||'Не удалось загрузить музыку.');
-    if(!Array.isArray(result.tracks))throw new Error('Не удалось прочитать результаты.');
+    if(!response.ok)throw new Error(result.error||t('Не удалось загрузить музыку.'));
+    if(!Array.isArray(result.tracks))throw new Error(t('Не удалось прочитать результаты.'));
     if(version!==requestVersion)return;
     library.tracks.push(...result.tracks);library.next=result.next_offset;library.total=result.total_count;library.loaded=true;
     library.reason=result.reason||'';
@@ -317,8 +320,8 @@ async function loadLibrary(source,append=false) {
     tracks=library.tracks;nextOffset=library.next;describeLibrary();
   }catch(error){
     if(version!==requestVersion)return;
-    viewError=error.name==='AbortError'?'Сервис не успел ответить. Попробуйте ещё раз.':error instanceof TypeError?'Сервис недоступен. Попробуйте ещё раз.':error.message;
-    $('#library-status').textContent=viewError;
+    viewError=error.name==='AbortError'?t('Сервис не успел ответить. Попробуйте ещё раз.'):error instanceof TypeError?t('Сервис недоступен. Попробуйте ещё раз.'):error.message;
+    $('#library-status').textContent=t(viewError);
   }finally{
     clearTimeout(timer);
     if(version===requestVersion){busy=false;render();if(current<0&&source!=='catalog')prepareTrack(tracks.findIndex(track=>track.playable),tracks);}
@@ -338,7 +341,7 @@ $('#search').oninput=()=>{
   cancelRequests();
   if(!$('#search').value.trim()){libraries.catalog={tracks:[],next:null,query:'',total:0,loaded:false};tracks=[];nextOffset=null;viewError='';describeLibrary();render();return;}
   libraries.catalog.tracks=[];libraries.catalog.next=null;libraries.catalog.loaded=false;tracks=[];nextOffset=null;viewError='';
-  $('#library-status').textContent='Ищем музыку в Audius…';render();
+  $('#library-status').textContent=t('Ищем музыку в Audius…');render();
   searchTimer=setTimeout(()=>loadSearch(),450);
 };
 $('#play').onclick=togglePlayback;
@@ -355,10 +358,10 @@ $('#seek').onchange=()=>{if(Number.isFinite(player.duration))player.currentTime=
 for(const event of ['timeupdate','loadedmetadata','durationchange','seeked','emptied'])player.addEventListener(event,updateProgress);
 for(const event of ['play','playing','pause','ended','waiting','stalled','error']) {
   player.addEventListener(event,()=>{
-    if(event==='playing'){errorController?.abort();errorController=null;actuallyPlaying=true;statusElement().textContent='Воспроизводится';prepareNext();}
+    if(event==='playing'){errorController?.abort();errorController=null;actuallyPlaying=true;statusElement().textContent=t('Воспроизводится');prepareNext();}
     if(['pause','ended','waiting','stalled','error'].includes(event))actuallyPlaying=false;
-    if(event==='pause')statusElement().textContent='Пауза';
-    if(event==='waiting')statusElement().textContent='Загружаем трек…';
+    if(event==='pause')statusElement().textContent=t('Пауза');
+    if(event==='waiting')statusElement().textContent=t('Загружаем трек…');
     if(event==='error'&&current>=0)showMediaError();
     syncControls();if(event==='ended')next(false);
   });
@@ -372,16 +375,16 @@ loadLibrary('saved');
 
 function isSaved(track){return track&&(savedOverrides.has(track.id)?savedOverrides.get(track.id):savedIds.has(track.id));}
 function syncSaveButtons(){
-  document.querySelectorAll('.row-save').forEach(button=>{const track=tracks[Number(button.dataset.index)],saved=isSaved(track);button.replaceChildren(icon(saved?'i-check':'i-plus'));button.disabled=!track?.stream_url||saving.has(track.id);button.setAttribute('aria-label',`${saved?'Убрать из моей музыки':'Добавить в мою музыку'}: ${track.title}`);button.setAttribute('aria-pressed',String(Boolean(saved)));});
-  const track=selectedTrack(),saved=isSaved(track);$('#full-save').replaceChildren(icon(saved?'i-check':'i-plus'));$('#full-save').disabled=!track?.stream_url||saving.has(track?.id);$('#full-save').setAttribute('aria-label',saved?'Убрать из моей музыки':'Добавить в мою музыку');$('#full-save').setAttribute('aria-pressed',String(Boolean(saved)));
+  document.querySelectorAll('.row-save').forEach(button=>{const track=tracks[Number(button.dataset.index)],saved=isSaved(track);button.replaceChildren(icon(saved?'i-check':'i-plus'));button.disabled=!track?.stream_url||saving.has(track.id);button.setAttribute('aria-label',`${saved?t('Убрать из моей музыки'):t('Добавить в мою музыку')}: ${track.title}`);button.setAttribute('aria-pressed',String(Boolean(saved)));});
+  const track=selectedTrack(),saved=isSaved(track);$('#full-save').replaceChildren(icon(saved?'i-check':'i-plus'));$('#full-save').disabled=!track?.stream_url||saving.has(track?.id);$('#full-save').setAttribute('aria-label',saved?t('Убрать из моей музыки'):t('Добавить в мою музыку'));$('#full-save').setAttribute('aria-pressed',String(Boolean(saved)));
 }
-function toast(message){clearTimeout(toastTimer);$('#toast').textContent=message;$('#toast').hidden=false;toastTimer=setTimeout(()=>$('#toast').hidden=true,3000);}
+function toast(message){clearTimeout(toastTimer);$('#toast').textContent=t(message);$('#toast').hidden=false;toastTimer=setTimeout(()=>$('#toast').hidden=true,3000);}
 async function personalRequest(path,body,timeout=20000){
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeout);
   try{
     const response=await fetch(apiBase+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({init_data:telegram?.initData,...body}),signal:controller.signal});
     const result=await response.json();
-    if(!response.ok)throw new Error(result.error||'Не удалось выполнить запрос.');
+    if(!response.ok)throw new Error(result.error||t('Не удалось выполнить запрос.'));
     return result;
   }finally{clearTimeout(timer);}
 }
@@ -392,9 +395,9 @@ async function saveTrack(track){
     const result=await personalRequest('/api/library/save',{stream_url:track.stream_url,saved:desired});
     savedOverrides.set(track.id,result.saved);if(result.saved)savedIds.add(track.id);else savedIds.delete(track.id);
     libraries.saved.loaded=false;libraries['for-you'].loaded=false;
-    toast(result.saved?'Добавлено в мою музыку':'Удалено из моей музыки');
+    toast(result.saved?t('Добавлено в мою музыку'):t('Удалено из моей музыки'));
     if(view==='saved')await loadLibrary('saved');
-  }catch(error){toast(error.name==='AbortError'?'Сервис не успел ответить. Попробуйте ещё раз.':error instanceof TypeError?'Нет связи с сервером. Попробуйте ещё раз.':error.message);}
+  }catch(error){toast(error.name==='AbortError'?t('Сервис не успел ответить. Попробуйте ещё раз.'):error instanceof TypeError?t('Нет связи с сервером. Попробуйте ещё раз.'):error.message);}
   finally{saving.delete(track.id);syncSaveButtons();}
 }
 $('#full-save').onclick=()=>saveTrack(selectedTrack());
@@ -418,27 +421,49 @@ for(const event of ['playing','pause','seeking','seeked'])player.addEventListene
 for(const event of ['gesturestart','gesturechange','gestureend'])document.addEventListener(event,e=>e.preventDefault(),{passive:false});
 document.addEventListener('touchmove',e=>{if(e.touches.length>1)e.preventDefault();},{passive:false});
 document.addEventListener('dblclick',e=>{if(!e.target.closest('input,textarea'))e.preventDefault();});
+let searchGesture=null;
 document.addEventListener('pointerdown',event=>{
+  searchGesture=null;
   const active=document.activeElement;
   // Keep controls under the finger and keep the keyboard open during playback actions.
   if(active===$('#search')&&event.target.closest('.player-dock')){
     event.preventDefault();return;
   }
-  if(active?.matches('input[type=search],input[type=text],textarea')&&!event.target.closest('input,textarea,label,.search-form'))active.blur();
+  if(active===$('#search')&&event.isPrimary!==false&&!event.target.closest('input,textarea,label,.search-form,[contenteditable]')){
+    searchGesture={id:event.pointerId,x:event.clientX,y:event.clientY,scrollX:window.scrollX,scrollY:window.scrollY,moved:false};
+  }
+},{capture:true});
+document.addEventListener('pointermove',event=>{
+  if(searchGesture?.id===event.pointerId&&Math.hypot(event.clientX-searchGesture.x,event.clientY-searchGesture.y)>8)searchGesture.moved=true;
+},{capture:true,passive:true});
+document.addEventListener('pointercancel',()=>{searchGesture=null;},{capture:true});
+document.addEventListener('pointerup',event=>{
+  const gesture=searchGesture;searchGesture=null;
+  if(!gesture||gesture.id!==event.pointerId||gesture.moved)return;
+  if(Math.hypot(event.clientX-gesture.x,event.clientY-gesture.y)>8||Math.abs(window.scrollY-gesture.scrollY)>3||Math.abs(window.scrollX-gesture.scrollX)>3)return;
+  if(document.activeElement===$('#search')&&!event.target.closest('input,textarea,label,.search-form,[contenteditable]'))$('#search').blur();
+},{capture:true});
+// Desktop mouse focus should also wait until a tap is distinguished from a drag.
+document.addEventListener('mousedown',event=>{
+  if(document.activeElement===$('#search')&&!event.target.closest('input,textarea,label,.search-form,[contenteditable]'))event.preventDefault();
 },{capture:true});
 
 // A keyboard may resize or pan the visible viewport independently of the page.
 // Move the same player, without replacing the audio element or its source.
-let searchLayoutFrame=0;
-function scheduleSearchLayout(){
+let searchLayoutFrame=0,revealSearchField=false;
+function scheduleSearchLayout(reveal=false){
+  revealSearchField||=reveal===true;
   if(searchLayoutFrame)return;
   searchLayoutFrame=requestAnimationFrame(()=>{
     searchLayoutFrame=0;
+    const shouldReveal=revealSearchField;revealSearchField=false;
     const focused=document.activeElement===$('#search');
     document.documentElement.classList.toggle('search-focused',focused);
     if(!focused){document.documentElement.style.removeProperty('--search-dock-top');return;}
     const viewport=window.visualViewport,top=viewport?.offsetTop||0;
     document.documentElement.style.setProperty('--search-dock-top',`${top}px`);
+    // Reveal on focus/keyboard resize, never pull the page back during scrolling.
+    if(!shouldReveal)return;
     const field=$('#search').getBoundingClientRect();
     const visibleTop=$('.player-dock').getBoundingClientRect().bottom+12;
     const visibleBottom=top+(viewport?.height||window.innerHeight)-16;
@@ -446,9 +471,15 @@ function scheduleSearchLayout(){
     else if(field.bottom>visibleBottom)window.scrollBy(0,field.bottom-visibleBottom);
   });
 }
-for(const event of ['focus','blur'])$('#search').addEventListener(event,scheduleSearchLayout);
-window.addEventListener('resize',scheduleSearchLayout);
-window.visualViewport?.addEventListener('resize',scheduleSearchLayout);
-window.visualViewport?.addEventListener('scroll',scheduleSearchLayout);
+$('#search').addEventListener('focus',()=>scheduleSearchLayout(true));
+$('#search').addEventListener('blur',()=>scheduleSearchLayout());
+window.addEventListener('resize',()=>scheduleSearchLayout(true));
+window.visualViewport?.addEventListener('resize',()=>scheduleSearchLayout(true));
+window.visualViewport?.addEventListener('scroll',()=>scheduleSearchLayout());
 syncTelegramLayout();
 requestAppFullscreen();
+
+$('#language-value').textContent=t('Автоматически')+' · '+(language==='ru'?'Русский':'English');
+$('#settings').onclick=()=>{$('#search').blur();$('#settings-dialog').showModal();telegram?.BackButton?.show();};
+$('#settings-dialog').addEventListener('close',()=>{if(!$('#now-playing-dialog').open)telegram?.BackButton?.hide();});
+$('#close-settings').onclick=()=>$('#settings-dialog').close();
