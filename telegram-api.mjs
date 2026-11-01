@@ -7,11 +7,11 @@ const now = () => Math.floor(Date.now() / 1000);
 const fileCache = new Map();
 const FILE_TTL = 15 * 60 * 1000;
 const CACHE_LIMIT = 400;
-const profileDescriptors=new Map();
+const profileDescriptors=new Map(),avatarFiles=new Map();
 
 // Cache only Telegram file metadata, not private audio bytes. A bot token change
 // creates a separate namespace; simultaneous Range requests share one lookup.
-export function clearFileCache() { fileCache.clear(); }
+export function clearFileCache() { fileCache.clear();avatarFiles.clear(); }
 async function getFile(env, fileId) {
   const cacheKey = `${env.BOT_TOKEN}:${fileId}`;
   const cached = fileCache.get(cacheKey);
@@ -25,6 +25,20 @@ async function getFile(env, fileId) {
   fileCache.set(cacheKey, entry);
   while (fileCache.size > CACHE_LIMIT) fileCache.delete(fileCache.keys().next().value);
   return entry.pending;
+}
+
+async function profileAvatarFile(env,user){
+  const cacheKey=`${env.BOT_TOKEN}:${user}`,cached=avatarFiles.get(cacheKey);
+  if(cached&&cached.expires>Date.now())return cached.pending;
+  const entry={expires:Date.now()+10*60000};
+  entry.pending=telegram(env,'getUserProfilePhotos',{user_id:user,offset:0,limit:1}).then(result=>{
+    const sizes=Array.isArray(result.photos?.[0])?result.photos[0]:[];
+    const photo=sizes.filter(item=>typeof item.file_id==='string'&&(!item.file_size||item.file_size<=1024*1024)).sort((a,b)=>Math.abs(Math.max(a.width||0,a.height||0)-160)-Math.abs(Math.max(b.width||0,b.height||0)-160))[0];
+    if(!photo)entry.expires=Date.now()+60000;
+    return photo?.file_id||null;
+  }).catch(error=>{if(avatarFiles.get(cacheKey)===entry)avatarFiles.delete(cacheKey);throw error;});
+  while(avatarFiles.size>=400)avatarFiles.delete(avatarFiles.keys().next().value);
+  avatarFiles.set(cacheKey,entry);return entry.pending;
 }
 
 class ApiError extends Error {
@@ -158,7 +172,7 @@ async function route(request, env) {
     if(!store)throw new ApiError(503,'Личная библиотека пока недоступна.');
     if(url.pathname==='/api/account'){
       const text=value=>typeof value==='string'?value.slice(0,200):'';
-      return Response.json({user:{id:user.id,first_name:text(user.first_name),last_name:text(user.last_name),username:text(user.username)},saved_count:store.count(user.id)});
+      return Response.json({user:{id:user.id,first_name:text(user.first_name),last_name:text(user.last_name),username:text(user.username)},saved_count:store.count(user.id),avatar_url:`${url.origin}/api/avatar?ticket=${encodeURIComponent(await ticketFor(env,user.id,{file_id:String(user.id)},'avatar'))}`});
     }
     if(url.pathname==='/api/library'){
       const offset=body.offset??0;if(!Number.isInteger(offset)||offset<0||offset>100000)throw new ApiError(400,'Некорректная страница.');
@@ -205,6 +219,13 @@ async function route(request, env) {
     },url.origin)));
     return Response.json({tracks, total_count: result.total_count,
       next_offset: tracks.length && offset+tracks.length < result.total_count ? offset+tracks.length : null});
+  }
+  if(url.pathname==='/api/avatar'&&request.method==='GET'){
+    const ticket=await readTicket(env,url.searchParams.get('ticket'));
+    if(ticket.type!=='avatar'||ticket.source!=='telegram'||ticket.file!==String(ticket.user))throw new ApiError(401,'Ссылка не подходит для этого файла.');
+    const file=await profileAvatarFile(env,ticket.user);
+    if(!file)throw new ApiError(404,'Аватар недоступен.');
+    return route(new Request(`${url.origin}/api/artwork?ticket=${encodeURIComponent(await ticketFor(env,ticket.user,{file_id:file},'artwork'))}`),env);
   }
   if (['/api/stream', '/api/artwork', '/api/prepare'].includes(url.pathname) && request.method === 'GET') {
     const prepare = url.pathname === '/api/prepare';

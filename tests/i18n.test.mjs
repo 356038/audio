@@ -15,4 +15,5 @@ test('UI, server errors and recommendation explanations translate without transl
  assert.equal(translate('en','Пока по знакомым исполнителям: у прослушанных треков не указан жанр.'),'Based on familiar artists for now: your played tracks have no genre information.');
  assert.equal(translate('en','Найдено {total}. Показано {loaded}.',{total:42,loaded:20}),'Found 42. Showing 20.');
  assert.equal(translate('en','Оригинальная песня'),'Оригинальная песня');
+ assert.equal(translate('ru','My music'),'Моя музыка');assert.equal(translate('en','constructor'),'constructor');
 });

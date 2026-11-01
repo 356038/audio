@@ -151,7 +151,7 @@ test('account uses only authenticated Telegram identity and its own saved count'
   assert.equal((await api.fetch(request('/api/account',{init_data:''}),env)).status,401);
   const body={init_data:signed(42,{first_name:'Anna',last_name:'Wave',username:'annawave'}),user_id:99};
   const response=await api.fetch(request('/api/account',body),env),result=await response.json();
-  assert.deepEqual(result,{user:{id:42,first_name:'Anna',last_name:'Wave',username:'annawave'},saved_count:1});
+  const {avatar_url,...details}=result;assert.deepEqual(details,{user:{id:42,first_name:'Anna',last_name:'Wave',username:'annawave'},saved_count:1});assert.ok(avatar_url.startsWith(origin+'/api/avatar?ticket='));
   assert.equal((await(await api.fetch(request('/api/account',{},99),env)).json()).saved_count,0);
  }finally{store.close();}
 });

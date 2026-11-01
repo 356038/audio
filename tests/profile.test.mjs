@@ -5,6 +5,7 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {AudioCache} from '../audio-cache.mjs';
+import {PersonalStore} from '../personal-store.mjs';
 import api, {authenticate, clearFileCache} from '../telegram-api.mjs';
 
 const BOT_TOKEN = '123456:unit-test-only';
@@ -203,4 +204,32 @@ test('generic uncached audio uses the Telegram file extension without changing b
   const response=await api.fetch(new Request(tracks[0].stream_url),env);
   assert.equal(response.headers.get('Content-Type'),'audio/mp4');
   assert.deepEqual([...new Uint8Array(await response.arrayBuffer())],[3,4]);
+});
+
+
+test('account avatar loads asynchronously through a signed private URL using the authenticated user',async()=>{
+ const store=new PersonalStore(':memory:');let photos=0,files=0;
+ try{
+  globalThis.fetch=()=>{throw Error('opening account must not wait for avatar lookup');};
+  const account=await(await api.fetch(new Request(origin+'/api/account',{method:'POST',body:JSON.stringify({init_data:initData(),user_id:99})}),{...env,PERSONAL_STORE:store})).json();
+  assert.ok(account.avatar_url.startsWith(origin+'/api/avatar?ticket='));
+  globalThis.fetch=async(url,options)=>{
+   if(url.endsWith('/getUserProfilePhotos')){photos++;assert.deepEqual(JSON.parse(options.body),{user_id:42,offset:0,limit:1});return ok({total_count:1,photos:[[{file_id:'small',width:32,height:32},{file_id:'avatar',width:160,height:160},{file_id:'large',width:640,height:640}]]});}
+   if(url.endsWith('/getFile')){files++;assert.equal(JSON.parse(options.body).file_id,'avatar');return ok({file_path:'photos/avatar.jpg',file_size:4});}
+   return new Response(new Uint8Array([255,216,255,217]),{headers:{'Content-Type':'application/octet-stream'}});
+  };
+  const image=await api.fetch(new Request(account.avatar_url),env);assert.equal(image.status,200);assert.equal(image.headers.get('Content-Type'),'image/jpeg');assert.equal((await image.arrayBuffer()).byteLength,4);
+  const again=await api.fetch(new Request(account.avatar_url),env);await again.arrayBuffer();assert.equal(photos,1);assert.equal(files,1);assert.ok(!account.avatar_url.includes(BOT_TOKEN));
+ }finally{store.close();}
+});
+
+test('missing avatars fall back cleanly and avatar tickets cannot retrieve audio',async()=>{
+ const store=new PersonalStore(':memory:');let calls=0;
+ try{
+  const account=await(await api.fetch(new Request(origin+'/api/account',{method:'POST',body:JSON.stringify({init_data:initData()})}),{...env,PERSONAL_STORE:store})).json();
+  globalThis.fetch=async url=>{calls++;assert.ok(url.endsWith('/getUserProfilePhotos'));return ok({total_count:0,photos:[]});};
+  assert.equal((await api.fetch(new Request(account.avatar_url.replace('/api/avatar','/api/stream')),env)).status,401);assert.equal(calls,0);
+  assert.equal((await api.fetch(new Request(origin+'/api/avatar?ticket=bad'),env)).status,401);assert.equal(calls,0);
+  assert.equal((await api.fetch(new Request(account.avatar_url),env)).status,404);assert.equal(calls,1);
+ }finally{store.close();}
 });

@@ -2,7 +2,10 @@
 const $ = selector => document.querySelector(selector);
 const player = $('#player');
 const telegram = window.Telegram?.WebApp;
-const language=WaveI18n.resolveLanguage(telegram?.initDataUnsafe?.user?.language_code,navigator.language);
+const languageStorageKey='wave-language:'+(telegram?.initDataUnsafe?.user?.id||'guest');
+let languagePreference='auto';
+try{const saved=localStorage.getItem(languageStorageKey);if(['auto','ru','en'].includes(saved))languagePreference=saved;}catch{/* Storage is optional. */}
+let language=languagePreference==='auto'?WaveI18n.resolveLanguage(telegram?.initDataUnsafe?.user?.language_code,navigator.language):languagePreference;
 const t=(source,params)=>WaveI18n.translate(language,source,params);
 WaveI18n.localizeDocument(language,document);
 const apiBase = (window.WAVE_API_BASE || '').replace(/\/$/, '');
@@ -17,11 +20,11 @@ const saveNotices=new Map();
 let toastTimer=null,listenSession=null,recommendationQueue=null;
 const feedRequests=new WeakMap();
 let libraryLayoutFrame=0,libraryLayoutTimer=null;
-let lastHaptic=-Infinity;
+let lastHaptic=-Infinity,playerPage=null,accountSavedCount=null;
 // One short native tick per deliberate control press, never for automatic events.
 document.addEventListener('click',event=>{
   if(!event.isTrusted)return;
-  const control=event.target.closest('.source-tabs button,.hero-dot,.hero-action,.row-play,.row-save,.track,.repeat-label,#play,#full-play,#next,#full-next,#previous,#full-save,#full-repeat,#open-player,#close-player,#profile,#account,#settings,#close-account,#close-settings,#account-library,#fullscreen,#hero-pause,#more');
+  const control=event.target.closest('.source-tabs button,.hero-dot,.hero-action,.row-play,.row-save,.track,.repeat-label,#play,#full-play,#next,#full-next,#previous,#full-save,#full-repeat,#open-player,#close-player,#profile,#account,#close-account,#account-library,#fullscreen,#hero-pause,#more');
   if(!control||control.disabled||control.getAttribute('aria-selected')==='true'||control.getAttribute('aria-current')==='true')return;
   const haptics=telegram?.HapticFeedback;
   if(!haptics||telegram.isVersionAtLeast&&!telegram.isVersionAtLeast('6.1'))return;
@@ -276,13 +279,14 @@ function previous() {
 function openPlayer() {
   if (current < 0 || $('#now-playing-dialog').open) return;
   $('#search').blur();
-  $('#now-playing-dialog').showModal(); document.body.classList.add('player-open');
+  playerPage={x:window.scrollX,y:window.scrollY};document.documentElement.style.setProperty('--player-page-top',`${-playerPage.y}px`);document.documentElement.classList.add('player-visible');
+  $('#now-playing-dialog').showModal(); document.body.classList.add('player-open');requestAnimationFrame(fitPlayerArtwork);
   if (!$('#full-artwork').querySelector('img')) addArtwork($('#full-artwork'), selectedTrack());
   telegram?.BackButton?.show();
 }
 function closePlayer() { if ($('#now-playing-dialog').open) $('#now-playing-dialog').close(); }
-$('#now-playing-dialog').addEventListener('close',()=>{document.body.classList.remove('player-open');telegram?.BackButton?.hide();});
-telegram?.BackButton?.onClick(()=>{if($('#account-dialog').open)$('#account-dialog').close();else if($('#settings-dialog').open)$('#settings-dialog').close();else closePlayer();});
+$('#now-playing-dialog').addEventListener('close',()=>{document.body.classList.remove('player-open');document.documentElement.classList.remove('player-visible');document.documentElement.style.removeProperty('--player-page-top');if(playerPage){window.scrollTo(playerPage.x,playerPage.y);playerPage=null;}telegram?.BackButton?.hide();});
+telegram?.BackButton?.onClick(()=>{if($('#account-dialog').open)$('#account-dialog').close();else closePlayer();});
 function updateProgress() {
   const total = Number.isFinite(player.duration) ? player.duration : selectedTrack()?.duration || 0;
   const position = Number.isFinite(player.currentTime) ? player.currentTime : 0;
@@ -297,7 +301,8 @@ function updateProgress() {
 function cancelRequests() {
   requestVersion++;requestController?.abort();requestController=null;clearTimeout(searchTimer);busy=false;
 }
-const viewNames={saved:t('Моя музыка'),profile:t('Из профиля Telegram'),catalog:t('Найти музыку'),'for-you':t('Для вас')};
+function translatedViewNames(){return {saved:t('Моя музыка'),profile:t('Из профиля Telegram'),catalog:t('Найти музыку'),'for-you':t('Для вас')};}
+let viewNames=translatedViewNames();
 function holdLibraryLayout(){
   cancelAnimationFrame(libraryLayoutFrame);clearTimeout(libraryLayoutTimer);
   const stage=$('#library-stage'),height=stage.getBoundingClientRect().height;
@@ -315,11 +320,7 @@ function animateLibraryLayout(){
 function setLibraryStatus(message=''){
   holdLibraryLayout();$('#library-status').textContent=t(message);$('#library-status').hidden=!message;animateLibraryLayout();
 }
-function switchView(target){
-  if(target===view)return;
-  $('#search').blur();holdLibraryLayout();
-  libraries[view].query=$('#search').value;cancelRequests();view=target;viewError='';
-  const library=libraries[view];tracks=library.tracks;nextOffset=library.next;$('#search').value=library.query;
+function updateViewLabels(){
   $('#library-title').textContent=viewNames[view];
   $('#search').placeholder=view==='catalog'?t('Название трека или исполнитель'):t('Трек или исполнитель');
   $('#search').setAttribute('aria-label',view==='catalog'?t('Поиск музыки в Audius'):t('Поиск по загруженной музыке'));
@@ -327,7 +328,14 @@ function switchView(target){
   $('#search-form').hidden=view==='for-you';
   for(const name of Object.keys(libraries))$('#tab-'+name).setAttribute('aria-selected',String(view===name));
   $('#profile').setAttribute('aria-label',view==='catalog'?t('Повторить поиск'):t('Обновить {section}',{section:viewNames[view]}));
-  $('#tracks').setAttribute('aria-label',viewNames[view]);setLibraryStatus();render();
+  $('#tracks').setAttribute('aria-label',viewNames[view]);
+}
+function switchView(target){
+  if(target===view)return;
+  $('#search').blur();holdLibraryLayout();
+  libraries[view].query=$('#search').value;cancelRequests();view=target;viewError='';
+  const library=libraries[view];tracks=library.tracks;nextOffset=library.next;$('#search').value=library.query;
+  updateViewLabels();setLibraryStatus();render();
   if((!library.loaded||library.stale)&&(view!=='catalog'||library.query.trim()))loadLibrary(view);
 }
 async function loadLibrary(source,append=false,{refresh=false}={}) {
@@ -396,7 +404,9 @@ for(const event of ['timeupdate','loadedmetadata','durationchange','seeked','emp
 for(const event of ['play','playing','pause','ended','waiting','stalled','error']) {
   player.addEventListener(event,()=>{
     if(event==='playing'){errorController?.abort();errorController=null;actuallyPlaying=true;statusElement().textContent=t('Воспроизводится');prepareNext();if(recommendationQueue&&current>=queue.length-3&&recommendationQueue.next!==null)loadMoreRecommendations(recommendationQueue).catch(()=>{});}
-    if(['pause','ended','waiting','stalled','error'].includes(event))actuallyPlaying=false;
+    // A stalled download can still have buffered audio playing. Only a real
+    // playback interruption should stop the indicators.
+    if(['pause','ended','waiting','error'].includes(event))actuallyPlaying=false;
     if(event==='pause')statusElement().textContent=t('Пауза');
     if(event==='waiting')statusElement().textContent=t('Загружаем трек…');
     if(event==='error'&&current>=0)showMediaError();
@@ -466,7 +476,10 @@ function checkpoint(){if(listenSession){listenSession.previousTime=player.curren
 function trackListening(){
   const session=listenSession;if(!session)return;
   const wall=performance.now(),position=player.currentTime,delta=position-session.previousTime,elapsed=(wall-session.previousWall)/1000;
-  if(actuallyPlaying&&!player.paused&&!player.seeking&&!seeking&&delta>0&&elapsed>0&&delta<=elapsed*1.5+1)session.seconds+=Math.min(delta,elapsed);
+  const advancing=!player.paused&&!player.ended&&!player.error&&!player.seeking&&!seeking&&delta>0&&elapsed>0&&delta<=elapsed*1.5+1;
+  // Some WebViews resume media without delivering another `playing` event.
+  if(advancing&&!actuallyPlaying){actuallyPlaying=true;setStatus(t('Воспроизводится'));syncControls();}
+  if(advancing&&actuallyPlaying)session.seconds+=Math.min(delta,elapsed);
   session.previousTime=position;session.previousWall=wall;
   const threshold=session.track.duration>0?Math.min(15,session.track.duration/2):15;
   if(session.seconds>=threshold&&!session.recorded&&!session.pending&&session.attempts<3&&Date.now()>=session.retryAt){
@@ -559,11 +572,7 @@ window.visualViewport?.addEventListener('resize',()=>scheduleSearchLayout(true))
 syncTelegramLayout();
 requestAppFullscreen();
 
-$('#language-value').textContent=t('Автоматически')+' · '+(language==='ru'?'Русский':'English');
-$('#settings').onclick=()=>{$('#search').blur();$('#settings-dialog').showModal();telegram?.BackButton?.show();};
-$('#settings-dialog').addEventListener('close',()=>{if(!$('#now-playing-dialog').open)telegram?.BackButton?.hide();});
-$('#close-settings').onclick=()=>$('#settings-dialog').close();
-
+$('#language-choice').value=languagePreference;
 $('#account').onclick=async()=>{
   $('#search').blur();$('#account-dialog').showModal();telegram?.BackButton?.show();
   $('#account-status').textContent=t('Загружаем…');$('#account-name').textContent='';$('#account-username').textContent='';$('#account-saved').textContent='';
@@ -573,11 +582,13 @@ $('#account').onclick=async()=>{
     $('#account-name').textContent=name||t('Пользователь Telegram');
     $('#account-username').textContent=user.username?'@'+user.username:'';
     $('#account-avatar').textContent=[user.first_name,user.last_name].filter(Boolean).map(part=>Array.from(part)[0]).slice(0,2).join('')||'W';
+    if(result.avatar_url){const image=document.createElement('img');image.src=result.avatar_url;image.alt='';image.decoding='async';image.referrerPolicy='no-referrer';image.onerror=()=>image.remove();$('#account-avatar').append(image);}
+    accountSavedCount=result.saved_count;
     $('#account-saved').textContent=t('Сохранено треков: {count}',{count:result.saved_count});$('#account-status').textContent='';
   }catch(error){$('#account-status').textContent=t(error.name==='AbortError'?'Сервис не успел ответить. Попробуйте ещё раз.':error instanceof TypeError?'Нет связи с сервером. Попробуйте ещё раз.':error.message);}
 };
 $('#close-account').onclick=()=>$('#account-dialog').close();
-$('#account-dialog').addEventListener('close',()=>{if(!$('#now-playing-dialog').open&&!$('#settings-dialog').open)telegram?.BackButton?.hide();});
+$('#account-dialog').addEventListener('close',()=>{if(!$('#now-playing-dialog').open)telegram?.BackButton?.hide();});
 $('#account-library').onclick=()=>{$('#account-dialog').close();switchView('saved');};
 
 async function loadMoreRecommendations(context=libraries['for-you']){
@@ -646,3 +657,23 @@ document.addEventListener('visibilitychange',scheduleHero);
 reducedMotion.addEventListener?.('change',()=>{heroMoving=false;scheduleHero();});
 heroSlides.forEach((slide,i)=>{slide.inert=i!==0;slide.querySelectorAll('button').forEach(button=>button.tabIndex=i===0?0:-1);});
 scheduleHero();
+
+function fitPlayerArtwork(){
+  if(!$('#now-playing-dialog').open)return;
+  const area=$('.full-artwork-space').getBoundingClientRect();
+  $('#full-artwork').style.setProperty('--full-cover-size',`${Math.max(0,Math.floor(Math.min(area.width,area.height)))}px`);
+}
+if('ResizeObserver'in window)new ResizeObserver(fitPlayerArtwork).observe($('.full-artwork-space'));
+window.addEventListener('resize',fitPlayerArtwork);
+$('#language-choice').onchange=()=>{
+  languagePreference=$('#language-choice').value;
+  try{localStorage.setItem(languageStorageKey,languagePreference);}catch{/* Storage is optional. */}
+  language=languagePreference==='auto'?WaveI18n.resolveLanguage(telegram?.initDataUnsafe?.user?.language_code,navigator.language):languagePreference;
+  const previousStatus=t($('#status').textContent),previousLibraryStatus=t($('#library-status').textContent);
+  WaveI18n.localizeDocument(language,document);viewNames=translatedViewNames();updateViewLabels();viewError=t(viewError);render();setStatus(previousStatus);setLibraryStatus(previousLibraryStatus);
+  $('#account-status').textContent=t($('#account-status').textContent);$('#toast').textContent=t($('#toast').textContent);
+  if(accountSavedCount!==null)$('#account-saved').textContent=t('Сохранено треков: {count}',{count:accountSavedCount});
+  if(selectedTrack()){$('#performer').textContent=selectedTrack().performer||t('Музыка профиля');$('#full-performer').textContent=selectedTrack().performer||t('Неизвестный исполнитель');$('#full-queue-title').textContent=recommendationQueue?t('Для вас'):selectedTrack().source==='audius'?t('Результаты поиска Audius'):t('Моя коллекция');}
+  $('#hero-pause').setAttribute('aria-label',t(heroPaused?'Продолжить карточки':'Приостановить карточки'));
+  const clone=heroSlides[0].cloneNode(true);heroClone.replaceChildren(...clone.childNodes);heroClone.inert=true;heroClone.querySelectorAll('button').forEach(button=>button.tabIndex=-1);
+};

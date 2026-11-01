@@ -1,6 +1,8 @@
 // UI translations only: track titles and artist names are never passed through this table.
 (() => {
   const english={
+  "Авто":"Auto",
+  "Аватар недоступен.":"Avatar unavailable.",
   "Музыка":"Music",
   "в твоём ритме.":"at your pace.",
   "Знакомые исполнители и новые открытия. Подборка, которая звучит по-твоему.":"Familiar artists and fresh discoveries. A mix that feels like you.",
@@ -195,28 +197,38 @@
   "Сохранено в WAVE: {total}. Профиль Telegram не изменяется.": "Saved in WAVE: {total}. Your Telegram profile is unchanged.",
   "Загружено {loaded} из {total}.": "Loaded {loaded} of {total}."
 };
+  const originalDocuments=new WeakMap();
+  const russian=Object.fromEntries(Object.entries(english).map(([source,translation])=>[translation,source]));
   function resolveLanguage(telegramLanguage,browserLanguage){
     const preferred=typeof telegramLanguage==='string'&&telegramLanguage.trim()?telegramLanguage:browserLanguage;
     return /^ru(?:[-_]|$)/i.test(preferred||'')?'ru':'en';
   }
   function translate(language,source,params={}){
     if(typeof source!=='string')return '';
-    const message=language==='en'?(english[source]||source):source;
+    const original=Object.hasOwn(english,source)?source:(Object.hasOwn(russian,source)?russian[source]:source);
+    const message=language==='en'?(Object.hasOwn(english,original)?english[original]:original):original;
     return message.replace(/\{(\w+)\}/g,(match,name)=>Object.hasOwn(params,name)?String(params[name]):match);
   }
   function localizeDocument(language,document){
-    const walker=document.createTreeWalker(document.body,4);
-    const nodes=[];while(walker.nextNode())nodes.push(walker.currentNode);
-    for(const node of nodes){
-      if(node.parentElement?.closest('script,style'))continue;
-      const source=node.nodeValue.trim();if(Object.hasOwn(english,source))node.nodeValue=node.nodeValue.replace(source,translate(language,source));
-    }
-    for(const element of document.querySelectorAll('[aria-label],[placeholder],[title]')){
-      for(const name of ['aria-label','aria-roledescription','placeholder','title']){
-        const source=element.getAttribute(name);if(Object.hasOwn(english,source))element.setAttribute(name,translate(language,source));
+    let original=originalDocuments.get(document);
+    if(!original){
+      original={nodes:[],attributes:[],title:document.title};
+      const walker=document.createTreeWalker(document.body,4);
+      while(walker.nextNode()){
+        const node=walker.currentNode,source=node.nodeValue.trim();
+        if(!node.parentElement?.closest('script,style,[translate=no]')&&Object.hasOwn(english,source))original.nodes.push({node,source,text:node.nodeValue});
       }
+      for(const element of document.querySelectorAll('[aria-label],[placeholder],[title]')){
+        if(element.closest('[translate=no]'))continue;
+        for(const name of ['aria-label','aria-roledescription','placeholder','title']){
+          const source=element.getAttribute(name);if(Object.hasOwn(english,source))original.attributes.push({element,name,source});
+        }
+      }
+      originalDocuments.set(document,original);
     }
-    document.documentElement.lang=language;document.title=translate(language,document.title);
+    for(const {node,source,text}of original.nodes)if(node.isConnected)node.nodeValue=text.replace(source,translate(language,source));
+    for(const {element,name,source}of original.attributes)if(element.isConnected)element.setAttribute(name,translate(language,source));
+    document.documentElement.lang=language;document.title=translate(language,original.title);
   }
   globalThis.WaveI18n={resolveLanguage,translate,localizeDocument};
 })();

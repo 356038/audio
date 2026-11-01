@@ -167,3 +167,37 @@ html.search-focused{height:100%;overflow:hidden;overscroll-behavior:none}
 
 .library-stage{overflow-anchor:none}.library-stage.is-resizing{overflow:hidden;transition:height .4s ease}
 #library-content{display:flow-root}
+
+/* Search shares the source tabs' pill shape and outer height. Keep a 16px
+   input font to avoid iOS focus zoom even with the smaller control. */
+:root{--navigation-height:48px}
+.source-tabs{height:var(--navigation-height);border-radius:999px;align-items:center}
+.search-form{height:var(--navigation-height)}
+.search-form .search-wrap{height:100%;min-width:0}
+.search-form input[type=search]{height:100%;border-radius:999px;padding:0 14px 0 40px;font-size:16px}
+.search-form .search-wrap svg{top:50%;transform:translateY(-50%)}
+.search-form .primary{height:100%;border-radius:999px;padding:0 16px;font-size:12px}
+@media(max-width:700px){:root{--navigation-height:42px}}
+
+.account-avatar{position:relative;overflow:hidden}
+.account-avatar img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.account-language{margin-top:16px;align-items:center}
+.account-language select{height:32px;max-width:140px;border:1px solid var(--line);border-radius:16px;background:var(--surface);color:var(--text);padding:0 10px;font-size:16px}
+
+/* The album screen is a fixed canvas; cover size adapts to the remaining space. */
+html.player-visible{height:100%;overflow:hidden;overscroll-behavior:none}
+.player-visible body{position:fixed;top:var(--player-page-top,0px);left:0;right:0;width:100%;height:100%;overflow:hidden;overscroll-behavior:none}
+.track-dialog{position:fixed;inset:0;margin:auto;height:min(760px,calc(100dvh - 24px));max-height:calc(100dvh - 24px);overflow:hidden;overscroll-behavior:none;touch-action:none}
+.track-dialog .full-player{height:100%;min-height:0;display:flex;flex-direction:column;justify-content:flex-start;padding:16px 28px 18px}
+.track-dialog .full-header{flex-shrink:0;margin-bottom:12px}
+.full-artwork-space{flex:1 1 0;min-height:0;position:relative;overflow:hidden}
+.full-artwork-space .full-artwork{position:absolute;inset:0;margin:auto;width:var(--full-cover-size,100%);height:var(--full-cover-size,100%);max-width:none;max-height:none;flex-shrink:1}
+.track-dialog .full-track-meta{flex-shrink:0;gap:12px;margin-top:18px}
+.track-dialog .full-track-meta h2{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:22px}
+.track-dialog .full-track-meta p{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;margin-top:6px}
+.track-dialog .seek-area{flex-shrink:0;margin-top:16px}
+.track-dialog .full-controls{flex-shrink:0;margin-top:14px}
+.track-dialog .full-status{flex-shrink:0;margin-top:12px;line-height:1.4}
+@media(max-width:700px){.track-dialog{width:100%;height:100dvh;max-height:100dvh;border-radius:0;margin:0}}
+.is-fullscreen .track-dialog .full-player{padding-top:calc(12px + var(--wave-top-inset));padding-bottom:calc(14px + var(--wave-bottom-inset))}
+@media(max-height:650px){.track-dialog .full-player{padding-left:22px;padding-right:22px}.track-dialog .full-header{margin-bottom:8px}.track-dialog .full-track-meta{margin-top:10px}.track-dialog .full-track-meta h2{font-size:18px}.track-dialog .seek-area{margin-top:8px}.track-dialog .full-controls{margin-top:8px}.track-dialog .full-controls .playback-button{width:52px;height:52px}.track-dialog .full-status{margin-top:8px}}
