@@ -183,3 +183,24 @@ test('authenticated preparation fills the disk cache, and cached streams skip Te
     assert.equal((await api.fetch(new Request(`${origin}/api/stream?ticket=invalid`),configured)).status,401);
   }finally{await cache.close();await rm(directory,{recursive:true,force:true});}
 });
+test('generic cached MP3 responses use signed profile metadata for their audio MIME',async()=>{
+  globalThis.fetch=async()=>ok({total_count:1,audios:[{file_id:'mime-song',file_unique_id:'id',mime_type:'application/octet-stream',file_name:'song.MP3'}]});
+  const {tracks}=await(await api.fetch(request({init_data:initData()}),env)).json();
+  let reads=0;
+  const cachedEnv={...env,AUDIO_CACHE:{responseIfPresent:async()=>{
+    reads++;return new Response(new Uint8Array([1,2]),{status:206,headers:{'Content-Type':'application/octet-stream','Content-Range':'bytes 0-1/10'}});
+  }}};
+  globalThis.fetch=()=>{throw Error('must not contact Telegram for a cached file');};
+  const response=await api.fetch(new Request(tracks[0].stream_url,{headers:{Range:'bytes=0-1'}}),cachedEnv);
+  assert.equal(response.status,206);assert.equal(response.headers.get('Content-Type'),'audio/mpeg');
+  assert.equal(response.headers.get('Content-Range'),'bytes 0-1/10');
+  assert.equal((await response.arrayBuffer()).byteLength,2);assert.equal(reads,1);
+});
+test('generic uncached audio uses the Telegram file extension without changing bytes',async()=>{
+  globalThis.fetch=async()=>ok({total_count:1,audios:[{file_id:'mime-m4a',file_unique_id:'id'}]});
+  const {tracks}=await(await api.fetch(request({init_data:initData()}),env)).json();
+  globalThis.fetch=async url=>url.endsWith('/getFile')?ok({file_path:'music/file.m4a',file_size:2}):new Response(new Uint8Array([3,4]),{headers:{'Content-Type':'application/octet-stream'}});
+  const response=await api.fetch(new Request(tracks[0].stream_url),env);
+  assert.equal(response.headers.get('Content-Type'),'audio/mp4');
+  assert.deepEqual([...new Uint8Array(await response.arrayBuffer())],[3,4]);
+});

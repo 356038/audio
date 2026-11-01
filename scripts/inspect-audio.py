@@ -40,7 +40,7 @@ def main():
     if not audio.is_file():
         raise SystemExit('Готового файла в постоянном кэше нет. Дождитесь загрузки и повторите.')
     meta = json.loads((directory / (digest + '.json')).read_text())
-    print('Тип содержимого:', meta.get('mime', 'не указан'))
+    print('Исходный тип в кэше (не HTTP-заголовок):', meta.get('mime', 'не указан'))
     print('Размер файла:', audio.stat().st_size, 'байт')
     print('Размер совпадает с кэшем:', audio.stat().st_size == meta.get('size'))
     with audio.open('rb') as file:
@@ -65,6 +65,14 @@ def main():
                              '-show_entries', 'stream=codec_name,codec_long_name,sample_rate,channels:format=format_name,duration,size',
                              '-of', 'json', str(audio)], capture_output=True, text=True, timeout=30)
     print('Код завершения ffprobe:', result.returncode)
+    packet = subprocess.run([probe, '-v', 'error', '-select_streams', 'a:0',
+                             '-read_intervals', '%+#1', '-show_packets',
+                             '-show_entries', 'packet=pos', '-of', 'json', str(audio)],
+                            capture_output=True, text=True, timeout=30)
+    try:
+        position=json.loads(packet.stdout).get('packets',[{}])[0].get('pos')
+        if position is not None:print('Позиция первого аудиопакета:',int(position),'байт')
+    except (ValueError,IndexError,TypeError):pass
     try:
         info = json.loads(result.stdout)
         # Output only named codec/container properties, never tags, paths or URLs.

@@ -29,6 +29,7 @@ for attempt in range(1, 3):
         raise SystemExit('Backend недоступен или не ответил за 50 секунд.')
     with response:
         headers_ms = (time.monotonic()-start)*1000
+        print('HTTP Content-Type:', response.headers.get('Content-Type', 'не указан'))
         if response.status not in (200, 206):
             if 'application/json' in response.headers.get('Content-Type', ''):
                 try:

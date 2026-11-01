@@ -82,8 +82,24 @@ async function telegram(env, method, body) {
 }
 
 async function ticketFor(env, userId, audio, type = 'audio') {
-  const payload = base64(JSON.stringify({user: userId, file: audio.file_id, type, exp: now()+7200}));
+  const payload = base64(JSON.stringify({user: userId, file: audio.file_id, type,
+    mime: type==='audio' ? audioMime(audio.mime_type,audio.file_name) : null, exp: now()+7200}));
   return `${payload}.${hex(await sign(env.BOT_TOKEN, `wave-stream:${payload}`))}`;
+}
+function audioMime(value,path='') {
+  const aliases={'audio/mpeg':'audio/mpeg','audio/mp3':'audio/mpeg','audio/x-mp3':'audio/mpeg',
+    'audio/mp4':'audio/mp4','audio/m4a':'audio/mp4','audio/x-m4a':'audio/mp4',
+    'audio/aac':'audio/aac','audio/ogg':'audio/ogg','application/ogg':'audio/ogg',
+    'audio/flac':'audio/flac','audio/x-flac':'audio/flac','audio/wav':'audio/wav','audio/x-wav':'audio/wav'};
+  const mime=typeof value==='string'?value.split(';')[0].trim().toLowerCase():'';
+  const extension=typeof path==='string'?path.split('.').pop().toLowerCase():'';
+  const extensions={mp3:'audio/mpeg',m4a:'audio/mp4',mp4:'audio/mp4',aac:'audio/aac',ogg:'audio/ogg',oga:'audio/ogg',opus:'audio/ogg',flac:'audio/flac',wav:'audio/wav'};
+  return Object.hasOwn(aliases,mime)?aliases[mime]:Object.hasOwn(extensions,extension)?extensions[extension]:null;
+}
+function correctAudioType(response,ticket,path='') {
+  const mime=audioMime(ticket.mime)||audioMime(response.headers.get('Content-Type'),path);
+  if(mime)response.headers.set('Content-Type',mime);
+  return response;
 }
 async function readTicket(env, value) {
   if (!value || value.length > 4096) throw new ApiError(401, 'Ссылка воспроизведения недействительна.');
@@ -141,7 +157,7 @@ async function route(request, env) {
         if(cached) {
           cached.headers.set('Server-Timing',`telegram_file;dur=0, cache_headers;dur=${(performance.now()-started).toFixed(1)}`);
           cached.headers.set('X-Accel-Buffering','no');
-          return cached;
+          return correctAudioType(cached,ticket);
         }
       }catch{/* A cache failure falls back to the authenticated Telegram route. */}
     }
@@ -166,7 +182,7 @@ async function route(request, env) {
         const response=await audioCache.stream(cacheKey,fileUrl,file.file_size,range);
         response.headers.set('Server-Timing',`telegram_file;dur=${lookupMs.toFixed(1)}, cache_headers;dur=${(performance.now()-started).toFixed(1)}`);
         response.headers.set('X-Accel-Buffering','no');
-        return response;
+        return correctAudioType(response,ticket,file.file_path);
       }catch{/* Keep playback available if disk caching cannot be used. */}
     }
     const headers = new Headers();
@@ -184,7 +200,7 @@ async function route(request, env) {
     for (const name of ['Content-Type', 'Content-Length', 'Content-Range', 'Accept-Ranges']) {
       if (upstream.headers.has(name)) out.set(name, upstream.headers.get(name));
     }
-    out.set('Content-Type', artwork ? 'image/jpeg' : upstream.headers.get('Content-Type') || 'application/octet-stream');
+    out.set('Content-Type', artwork ? 'image/jpeg' : audioMime(ticket.mime)||audioMime(upstream.headers.get('Content-Type'),file.file_path)||'application/octet-stream');
     out.set('Server-Timing', `telegram_file;dur=${lookupMs.toFixed(1)}, telegram_headers;dur=${(performance.now()-streamStart).toFixed(1)}`);
     out.set('X-Accel-Buffering','no');
     if(!artwork)out.set('X-Wave-Cache','BYPASS');
