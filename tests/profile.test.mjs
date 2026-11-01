@@ -1,13 +1,13 @@
 import test, {afterEach} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHmac} from 'node:crypto';
-import api, {authenticate} from '../telegram-api.mjs';
+import api, {authenticate, clearFileCache} from '../telegram-api.mjs';
 
 const BOT_TOKEN = '123456:unit-test-only';
 const origin = 'https://wave.example';
 const env = {BOT_TOKEN, FRONTEND_ORIGIN: origin};
 const originalFetch = globalThis.fetch;
-afterEach(() => {globalThis.fetch = originalFetch;});
+afterEach(() => {globalThis.fetch = originalFetch;clearFileCache();});
 
 function initData(overrides = {}) {
   const data = new URLSearchParams({auth_date: String(Math.floor(Date.now()/1000)), user: JSON.stringify({id:42, first_name:'Test'}), ...overrides});
@@ -113,4 +113,45 @@ test('Telegram failure is sanitised, CORS is restricted, missing config is expli
   assert.equal(response.status,502);assert.ok(!(await response.text()).includes(BOT_TOKEN));
   assert.equal((await api.fetch(new Request(`${origin}/api/profile-audios`,{method:'POST',headers:{Origin:'https://untrusted.example'}}),env)).status,403);
   assert.equal((await api.fetch(request({init_data:initData()}),{FRONTEND_ORIGIN:origin})).status,503);
+});
+test('preparing the next track coalesces lookups and reuses them for Range requests', async () => {
+  globalThis.fetch = async () => ok({total_count:1,audios:[{file_id:'cached-song',file_unique_id:'id'}]});
+  const {tracks} = await (await api.fetch(request({init_data:initData()}),env)).json();
+  const stream = tracks[0].stream_url;
+  let lookups=0, downloads=0;
+  globalThis.fetch = async (url,options) => {
+    if(url.endsWith('/getFile')) {
+      lookups++;
+      await new Promise(resolve=>setTimeout(resolve,30));
+      return ok({file_path:'music/cached.mp3',file_size:100});
+    }
+    downloads++;
+    assert.equal(options.headers.get('Range'),'bytes=0-2');
+    return new Response(new Uint8Array([1,2,3]),{status:206,headers:{'Content-Range':'bytes 0-2/100','Content-Type':'audio/mpeg'}});
+  };
+  const prepares = await Promise.all([1,2,3].map(()=>api.fetch(new Request(stream.replace('/api/stream','/api/prepare')),env)));
+  assert.ok(prepares.every(response=>response.status===200));
+  assert.equal(lookups,1);assert.equal(downloads,0);
+  for(let i=0;i<2;i++) {
+    const response=await api.fetch(new Request(stream,{headers:{Range:'bytes=0-2'}}),env);
+    assert.equal(response.status,206);
+    assert.equal(response.headers.get('Cache-Control'),'no-store');
+    assert.match(response.headers.get('Server-Timing'),/telegram_file;dur=/);
+    await response.arrayBuffer();
+  }
+  assert.equal(lookups,1);assert.equal(downloads,2);
+});
+test('failed file lookups are not cached and unsigned preparation is rejected', async () => {
+  globalThis.fetch = async () => ok({total_count:1,audios:[{file_id:'retry-song',file_unique_id:'id'}]});
+  const {tracks} = await (await api.fetch(request({init_data:initData()}),env)).json();
+  const prepare=tracks[0].stream_url.replace('/api/stream','/api/prepare');
+  let calls=0;
+  globalThis.fetch = async () => ++calls===1
+    ? Response.json({ok:false,error_code:400},{status:400})
+    : ok({file_path:'music/retry.mp3',file_size:100});
+  assert.equal((await api.fetch(new Request(prepare),env)).status,502);
+  assert.equal((await api.fetch(new Request(prepare),env)).status,200);
+  assert.equal(calls,2);
+  assert.equal((await api.fetch(new Request(`${origin}/api/prepare`),env)).status,401);
+  assert.equal(calls,2);
 });

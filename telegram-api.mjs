@@ -2,6 +2,27 @@
 const encoder = new TextEncoder();
 const MAX_FILE = 20 * 1024 * 1024;
 const now = () => Math.floor(Date.now() / 1000);
+const fileCache = new Map();
+const FILE_TTL = 15 * 60 * 1000;
+const CACHE_LIMIT = 400;
+
+// Cache only Telegram file metadata, not private audio bytes. A bot token change
+// creates a separate namespace; simultaneous Range requests share one lookup.
+export function clearFileCache() { fileCache.clear(); }
+async function getFile(env, fileId) {
+  const cacheKey = `${env.BOT_TOKEN}:${fileId}`;
+  const cached = fileCache.get(cacheKey);
+  if (cached && cached.expires > Date.now()) return cached.pending;
+  const entry = {expires: Date.now()+FILE_TTL};
+  entry.pending = telegram(env, 'getFile', {file_id: fileId}).catch(error => {
+    if (fileCache.get(cacheKey) === entry) fileCache.delete(cacheKey);
+    throw error;
+  });
+  fileCache.delete(cacheKey);
+  fileCache.set(cacheKey, entry);
+  while (fileCache.size > CACHE_LIMIT) fileCache.delete(fileCache.keys().next().value);
+  return entry.pending;
+}
 
 class ApiError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -105,15 +126,19 @@ async function route(request, env) {
     return Response.json({tracks, total_count: result.total_count,
       next_offset: tracks.length && offset+tracks.length < result.total_count ? offset+tracks.length : null});
   }
-  if (['/api/stream', '/api/artwork'].includes(url.pathname) && request.method === 'GET') {
+  if (['/api/stream', '/api/artwork', '/api/prepare'].includes(url.pathname) && request.method === 'GET') {
+    const prepare = url.pathname === '/api/prepare';
     const artwork = url.pathname === '/api/artwork';
     const ticket = await readTicket(env, url.searchParams.get('ticket'));
     if ((ticket.type || 'audio') !== (artwork ? 'artwork' : 'audio')) throw new ApiError(401, 'Ссылка не подходит для этого файла.');
-    const file = await telegram(env, 'getFile', {file_id: ticket.file});
+    const lookupStart = performance.now();
+    const file = await getFile(env, ticket.file);
+    const lookupMs = performance.now()-lookupStart;
     if (file.file_size > (artwork ? 1024 * 1024 : MAX_FILE)) throw new ApiError(413, 'Файл превышает лимит загрузки.');
     if (typeof file.file_path !== 'string' || !/^[a-zA-Z0-9_./-]+$/.test(file.file_path) || file.file_path.includes('..') || file.file_path.startsWith('/')) {
       throw new ApiError(502, 'Telegram не предоставил путь аудиофайла.');
     }
+    if (prepare) return Response.json({ready:true});
     const headers = new Headers();
     const range = request.headers.get('Range');
     if (range) {
@@ -121,6 +146,7 @@ async function route(request, env) {
       headers.set('Range', range);
     }
     let upstream;
+    const streamStart = performance.now();
     try { upstream = await fetch(`https://api.telegram.org/file/bot${env.BOT_TOKEN}/${file.file_path}`, {headers, redirect: 'error', signal: AbortSignal.timeout(30000)}); }
     catch { throw new ApiError(502, 'Не удалось загрузить аудио из Telegram.'); }
     if (![200, 206, 416].includes(upstream.status)) throw new ApiError(502, 'Аудиофайл сейчас недоступен.');
@@ -129,6 +155,8 @@ async function route(request, env) {
       if (upstream.headers.has(name)) out.set(name, upstream.headers.get(name));
     }
     out.set('Content-Type', artwork ? 'image/jpeg' : upstream.headers.get('Content-Type') || 'application/octet-stream');
+    out.set('Server-Timing', `telegram_file;dur=${lookupMs.toFixed(1)}, telegram_headers;dur=${(performance.now()-streamStart).toFixed(1)}`);
+    if (artwork && upstream.status === 200) out.set('Cache-Control', `private, max-age=${Math.min(60, Math.max(0, ticket.exp-now()))}`);
     return new Response(upstream.body, {status: upstream.status, headers: out});
   }
   throw new ApiError(404, 'Не найдено.');
@@ -151,7 +179,7 @@ export default {
     headers.set('Access-Control-Allow-Headers', 'Content-Type, Range');
     headers.set('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length');
     headers.set('Vary', 'Origin');
-    headers.set('Cache-Control', 'no-store');
+    if (!headers.has('Cache-Control')) headers.set('Cache-Control', 'no-store');
     headers.set('Referrer-Policy', 'no-referrer');
     headers.set('X-Content-Type-Options', 'nosniff');
     return new Response(response.body, {status: response.status, headers});

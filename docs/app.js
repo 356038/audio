@@ -7,6 +7,8 @@ const halloween = window.WAVE_THEME !== 'default';
 document.documentElement.dataset.theme = halloween ? 'halloween' : 'default';
 let tracks = [], current = -1, nextOffset = null, busy = false, seeking = false;
 let actuallyPlaying = false;
+let warmController = null;
+const prepared = new Set();
 telegram?.ready();
 telegram?.expand();
 try {
@@ -55,6 +57,7 @@ function render() {
     visibleCount++;
     const li = document.createElement('li'), button = document.createElement('button'), detail = document.createElement('small');
     li.className = `track-row${current === index ? ' selected' : ''}`;
+    li.dataset.index = index;
     button.type = 'button'; button.className = `track${current === index ? ' active' : ''}`;
     button.disabled = !track.playable;
     button.setAttribute('aria-label', `Открыть ${track.title}${track.performer ? ' — '+track.performer : ''}`);
@@ -80,6 +83,31 @@ function render() {
   $('#profile').disabled = busy;
   $('#profile').classList.toggle('busy', busy);
   syncControls();
+}
+function syncSelection() {
+  document.querySelectorAll('.track-row').forEach(row => {
+    const selected = Number(row.dataset.index) === current;
+    row.classList.toggle('selected', selected);
+    row.querySelector('.track').classList.toggle('active', selected);
+  });
+  syncControls();
+}
+function prepareNext() {
+  if (current < 0 || navigator.connection?.saveData || document.visibilityState === 'hidden') return;
+  let index = tracks.findIndex((track,i) => i>current && track.playable);
+  if (index < 0 && $('#repeat').checked) index = tracks.findIndex(track => track.playable);
+  const track = tracks[index];
+  if (!track?.stream_url || index === current || prepared.has(track.stream_url)) return;
+  const url = new URL(track.stream_url);
+  if (url.pathname !== '/api/stream') return;
+  warmController?.abort();warmController = new AbortController();
+  const controller = warmController;
+  const timer = setTimeout(()=>controller.abort(),20000);
+  url.pathname = '/api/prepare';
+  prepared.add(track.stream_url);
+  fetch(url,{signal:controller.signal,cache:'no-store'}).then(response=>{
+    if(!response.ok)prepared.delete(track.stream_url);
+  }).catch(()=>prepared.delete(track.stream_url)).finally(()=>clearTimeout(timer));
 }
 function syncControls() {
   const playing = current >= 0 && !player.paused && !player.ended;
@@ -115,12 +143,13 @@ function select(index, autoplay) {
   $('#full-title').textContent = track.title; $('#full-performer').textContent = track.performer || 'Неизвестный исполнитель';
   $('.now-art').querySelectorAll('img').forEach(image=>image.remove()); $('.now-art').classList.remove('has-artwork');
   $('#full-artwork').querySelectorAll('img').forEach(image=>image.remove()); $('#full-artwork').classList.remove('has-artwork');
-  addArtwork($('.now-art'), track); addArtwork($('#full-artwork'), track);
+  addArtwork($('.now-art'), track);
+  if ($('#now-playing-dialog').open) addArtwork($('#full-artwork'), track);
   $('#open-player').disabled = false; $('#next').disabled = false;
   if ('mediaSession' in navigator && 'MediaMetadata' in window) {
     navigator.mediaSession.metadata = new MediaMetadata({title: track.title, artist: track.performer || 'WAVE', artwork: track.artwork_url ? [{src:track.artwork_url}] : []});
   }
-  updateProgress(); render(); if (autoplay) play();
+  updateProgress(); syncSelection(); if (autoplay) play();
 }
 function next(manual = true) {
   for (let step=1;step<=tracks.length;step++) {
@@ -139,6 +168,7 @@ function previous() {
 function openPlayer() {
   if (current < 0 || $('#now-playing-dialog').open) return;
   $('#now-playing-dialog').showModal(); document.body.classList.add('player-open');
+  if (!$('#full-artwork').querySelector('img')) addArtwork($('#full-artwork'), tracks[current]);
   telegram?.BackButton?.show();
 }
 function closePlayer() { if ($('#now-playing-dialog').open) $('#now-playing-dialog').close(); }
@@ -156,6 +186,7 @@ function updateProgress() {
   $('.dock-progress').style.setProperty('--progress', progress);
 }
 function reset() {
+  warmController?.abort();prepared.clear();
   closePlayer(); player.pause(); player.removeAttribute('src'); player.load(); tracks=[]; current=-1; nextOffset=null; actuallyPlaying=false;
   $('#title').textContent = 'Поймай свою волну'; $('#performer').textContent = 'Выбери трек из коллекции';
   $('#next').disabled=true; $('#open-player').disabled=true; $('#search').value='';
@@ -197,7 +228,7 @@ $('#seek').onchange=()=>{if(Number.isFinite(player.duration))player.currentTime=
 for(const event of ['timeupdate','loadedmetadata','durationchange','seeked','emptied'])player.addEventListener(event,updateProgress);
 for(const event of ['play','playing','pause','ended','waiting','stalled','error']) {
   player.addEventListener(event,()=>{
-    if(event==='playing'){actuallyPlaying=true;$('#status').textContent='Воспроизводится';}
+    if(event==='playing'){actuallyPlaying=true;$('#status').textContent='Воспроизводится';prepareNext();}
     if(['pause','ended','waiting','stalled','error'].includes(event))actuallyPlaying=false;
     if(event==='pause')$('#status').textContent='Пауза';
     if(event==='waiting')$('#status').textContent='Загружаем трек…';
