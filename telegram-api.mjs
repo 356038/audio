@@ -1,11 +1,13 @@
 // Telegram API service. BOT_TOKEN is a server secret, never a browser setting.
-import {searchAudius,AudiusError,registerAudiusTrack,serveAudiusMedia} from './audius.mjs';
+import {searchAudius,AudiusError,registerAudiusTrack,serveAudiusMedia,describeAudiusTrack} from './audius.mjs';
+import {recommendations} from './recommendations.mjs';
 const encoder = new TextEncoder();
 const MAX_FILE = 20 * 1024 * 1024;
 const now = () => Math.floor(Date.now() / 1000);
 const fileCache = new Map();
 const FILE_TTL = 15 * 60 * 1000;
 const CACHE_LIMIT = 400;
+const profileDescriptors=new Map();
 
 // Cache only Telegram file metadata, not private audio bytes. A bot token change
 // creates a separate namespace; simultaneous Range requests share one lookup.
@@ -116,23 +118,69 @@ async function readTicket(env, value) {
   return data;
 }
 
+async function presentTrack(env,user,item,origin){
+  const saved=Boolean(env.PERSONAL_STORE?.has(user,item.id));
+  if(item.source==='audius'||item.track_id){
+    const reference=registerAudiusTrack(user,item,env),audio={file_id:reference,mime_type:item.mime};
+    return {id:item.id,source:'audius',title:item.title,performer:item.performer,duration:item.duration,saved,
+      playable:item.playable,unavailable_reason:item.unavailable_reason,
+      stream_url:item.playable?`${origin}/api/stream?ticket=${encodeURIComponent(await ticketFor(env,user,audio,'audio','audius'))}`:null,
+      artwork_url:item.artwork_url?`${origin}/api/artwork?ticket=${encodeURIComponent(await ticketFor(env,user,audio,'artwork','audius'))}`:null};
+  }
+  const key=`${env.BOT_TOKEN}:${user}:${item.file_id}`;
+  while(profileDescriptors.size>=6000)profileDescriptors.delete(profileDescriptors.keys().next().value);
+  profileDescriptors.set(key,{item,expires:Date.now()+7200000});
+  const audio={file_id:item.file_id,mime_type:item.mime};
+  return {id:item.id,source:'telegram',title:item.title,performer:item.performer,duration:item.duration,saved,playable:item.playable,
+    stream_url:item.playable?`${origin}/api/stream?ticket=${encodeURIComponent(await ticketFor(env,user,audio))}`:null,
+    artwork_url:item.thumbnail_file_id?`${origin}/api/artwork?ticket=${encodeURIComponent(await ticketFor(env,user,{file_id:item.thumbnail_file_id},'artwork'))}`:null};
+}
+async function descriptorFromRequest(env,user,raw,origin){
+  let link;try{link=new URL(raw);}catch{throw new ApiError(400,'Выберите композицию заново.');}
+  if(link.origin!==origin||link.pathname!=='/api/stream')throw new ApiError(400,'Недействительная ссылка трека.');
+  const ticket=await readTicket(env,link.searchParams.get('ticket'));
+  if(ticket.user!==user||ticket.type!=='audio')throw new ApiError(403,'Нет доступа к этой композиции.');
+  if(ticket.source==='audius')return describeAudiusTrack(user,ticket,env);
+  if(ticket.source&&ticket.source!=='telegram')throw new ApiError(400,'Неизвестный источник.');
+  const ref=profileDescriptors.get(`${env.BOT_TOKEN}:${user}:${ticket.file}`);
+  if(!ref||ref.expires<Date.now())throw new ApiError(401,'Обновите коллекцию и попробуйте снова.');
+  return ref.item;
+}
+
 async function route(request, env) {
   const url = new URL(request.url);
   if (url.pathname === '/health' && request.method === 'GET') return Response.json({ok: true, configured: Boolean(env.BOT_TOKEN)});
   if (!env.BOT_TOKEN) throw new ApiError(503, 'Сервис музыки ещё не подключён.');
+  if(['/api/library','/api/library/save','/api/history','/api/recommendations'].includes(url.pathname)&&request.method==='POST'){
+    const text=await request.text();if(text.length>20000)throw new ApiError(413,'Слишком большой запрос.');
+    let body;try{body=JSON.parse(text);}catch{throw new ApiError(400,'Некорректный запрос.');}
+    const user=await authenticate(body?.init_data,env.BOT_TOKEN),store=env.PERSONAL_STORE;
+    if(!store)throw new ApiError(503,'Личная библиотека пока недоступна.');
+    if(url.pathname==='/api/library'){
+      const offset=body.offset??0;if(!Number.isInteger(offset)||offset<0||offset>100000)throw new ApiError(400,'Некорректная страница.');
+      const items=store.list(user.id,offset),total=store.count(user.id);
+      return Response.json({tracks:await Promise.all(items.map(item=>presentTrack(env,user.id,item,url.origin))),saved_ids:store.ids(user.id),total_count:total,next_offset:offset+items.length<total?offset+items.length:null});
+    }
+    if(url.pathname==='/api/recommendations'){
+      const result=await recommendations(env,user.id,store);
+      return Response.json({tracks:await Promise.all(result.items.map(item=>presentTrack(env,user.id,item,url.origin))),total_count:result.items.length,next_offset:null,reason:result.reason,personalized:result.personalized,history_count:result.history_count});
+    }
+    const item=await descriptorFromRequest(env,user.id,body.stream_url,url.origin);
+    if(url.pathname==='/api/library/save'){
+      if(typeof body.saved!=='boolean')throw new ApiError(400,'Укажите действие сохранения.');
+      store.save(user.id,item,body.saved);return Response.json({id:item.id,saved:body.saved});
+    }
+    if(typeof body.play_id!=='string'||!/^[-a-z0-9]{16,80}$/i.test(body.play_id)||!Number.isFinite(body.seconds)||body.seconds<0||body.seconds>86400)throw new ApiError(400,'Некорректное событие воспроизведения.');
+    const minimum=item.duration>0?Math.min(15,item.duration/2):15;
+    const recorded=body.seconds>=minimum&&store.record(user.id,item,body.play_id,Math.min(body.seconds,item.duration||86400));
+    return Response.json({recorded:Boolean(recorded)});
+  }
   if(url.pathname==='/api/search'&&request.method==='POST') {
     const text=await request.text();if(text.length>20000)throw new ApiError(413,'Слишком большой запрос.');
     let body;try{body=JSON.parse(text);}catch{throw new ApiError(400,'Некорректный запрос.');}
     const user=await authenticate(body?.init_data,env.BOT_TOKEN);
     const result=await searchAudius(env,{query:body.query,offset:body.offset??0,count:20});
-    const tracks=await Promise.all(result.items.map(async item=>{
-      const reference=registerAudiusTrack(user.id,item,env);
-      const audio={file_id:reference,mime_type:item.mime};
-      return {id:item.id,source:'audius',title:item.title,performer:item.performer,duration:item.duration,
-        playable:item.playable,unavailable_reason:item.unavailable_reason,
-        stream_url:item.playable?`${url.origin}/api/stream?ticket=${encodeURIComponent(await ticketFor(env,user.id,audio,'audio','audius'))}`:null,
-        artwork_url:item.artwork_url?`${url.origin}/api/artwork?ticket=${encodeURIComponent(await ticketFor(env,user.id,audio,'artwork','audius'))}`:null};
-    }));
+    const tracks=await Promise.all(result.items.map(item=>presentTrack(env,user.id,item,url.origin)));
     return Response.json({tracks,total_count:result.total_count,next_offset:result.next_offset});
   }
   if (url.pathname === '/api/profile-audios' && request.method === 'POST') {
@@ -146,15 +194,11 @@ async function route(request, env) {
     // Always use the authenticated identity; never accept a client-supplied user_id.
     const result = await telegram(env, 'getUserProfileAudios', {user_id: user.id, offset, limit: 100});
     if (!Array.isArray(result?.audios) || !Number.isInteger(result.total_count)) throw new ApiError(502, 'Неожиданный ответ Telegram.');
-    const tracks = await Promise.all(result.audios.map(async audio => ({
-      id: audio.file_unique_id, title: audio.title || audio.file_name || 'Без названия',
-      performer: audio.performer || '', duration: audio.duration || 0,
-      playable: !audio.file_size || audio.file_size <= MAX_FILE,
-      artwork_url: audio.thumbnail?.file_id
-        ? `${url.origin}/api/artwork?ticket=${encodeURIComponent(await ticketFor(env, user.id, audio.thumbnail, 'artwork'))}` : null,
-      stream_url: !audio.file_size || audio.file_size <= MAX_FILE
-        ? `${url.origin}/api/stream?ticket=${encodeURIComponent(await ticketFor(env, user.id, audio))}` : null,
-    })));
+    const tracks = await Promise.all(result.audios.map(audio=>presentTrack(env,user.id,{
+      id:audio.file_unique_id,source:'telegram',file_id:audio.file_id,mime:audioMime(audio.mime_type,audio.file_name),
+      title:audio.title||audio.file_name||'Без названия',performer:audio.performer||'',duration:audio.duration||0,
+      playable:!audio.file_size||audio.file_size<=MAX_FILE,thumbnail_file_id:audio.thumbnail?.file_id||null,
+    },url.origin)));
     return Response.json({tracks, total_count: result.total_count,
       next_offset: tracks.length && offset+tracks.length < result.total_count ? offset+tracks.length : null});
   }

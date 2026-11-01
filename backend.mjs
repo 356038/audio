@@ -1,4 +1,4 @@
-// Dependency-free Node.js 22+ server. Serves the Mini App and its Telegram API.
+// Dependency-free Node.js 22.13+ server. Serves the Mini App and its Telegram API.
 import http from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
@@ -9,6 +9,7 @@ import {AudioCache} from './audio-cache.mjs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {audiusFetch} from './audius.mjs';
+import {PersonalStore} from './personal-store.mjs';
 
 export function createServer(env = process.env) {
   const publicOrigin = env.FRONTEND_ORIGIN;
@@ -23,6 +24,7 @@ export function createServer(env = process.env) {
     env.WAVE_CACHE_DIR || join(env.STATE_DIRECTORY || tmpdir(), 'wave-audio-cache'),{
       fetcher:(url,options)=>new URL(url).hostname==='api.telegram.org'?fetch(url,options):audiusFetch(url,options,env),
     });
+  const personal=new PersonalStore(join(env.WAVE_DATA_DIR||env.STATE_DIRECTORY||join(tmpdir(),'wave-personal'),'library.sqlite'));
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, publicOrigin);
@@ -47,7 +49,7 @@ export function createServer(env = process.env) {
       const response = await api.fetch(new Request(url, {
         method: req.method, headers: req.headers,
         body: ['GET', 'HEAD'].includes(req.method) ? undefined : Buffer.concat(chunks),
-      }), {...env, FRONTEND_ORIGIN: publicOrigin, AUDIO_CACHE:cache});
+      }), {...env, FRONTEND_ORIGIN: publicOrigin, AUDIO_CACHE:cache, PERSONAL_STORE:personal});
       res.writeHead(response.status, Object.fromEntries(response.headers));
       if (response.body) await pipeline(Readable.fromWeb(response.body), res);
       else res.end();
@@ -57,7 +59,7 @@ export function createServer(env = process.env) {
       res.end(JSON.stringify({error: 'Сервис временно недоступен.'}));
     }
   });
-  server.once('close',()=>cache?.close().catch(()=>{}));
+  server.once('close',()=>{cache?.close().catch(()=>{});personal.close();});
   return server;
 }
 

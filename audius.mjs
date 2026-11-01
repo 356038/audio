@@ -82,7 +82,7 @@ export async function searchAudius(env,{query,offset=0,count=20}={}){
   const items=result.data.slice(0,count).filter(t=>t&&typeof t.id==='string'&&/^[a-zA-Z0-9]+$/.test(t.id)).map(t=>{
     const gated=Boolean(t.is_stream_gated),playable=!gated&&t.is_streamable!==false;
     let artwork=null;for(const key of ['480x480','150x150','1000x1000']){try{if(t.artwork?.[key]){artwork=checkedUrl(t.artwork[key]).href;break;}}catch{}}
-    return {id:'audius:'+t.id,track_id:t.id,title:typeof t.title==='string'?t.title.slice(0,1000):'Без названия',performer:typeof t.user?.name==='string'?t.user.name.slice(0,1000):'',duration:Number.isFinite(t.duration)?Math.max(0,t.duration):0,playable,unavailable_reason:playable?null:gated?'Трек требует отдельного доступа в Audius.':'Трек недоступен для воспроизведения.',artwork_url:artwork,mime:'audio/mpeg'};
+    return {id:'audius:'+t.id,track_id:t.id,title:typeof t.title==='string'?t.title.slice(0,1000):'Без названия',performer:typeof t.user?.name==='string'?t.user.name.slice(0,1000):'',genre:typeof t.genre==='string'?t.genre.slice(0,100):'',duration:Number.isFinite(t.duration)?Math.max(0,t.duration):0,playable,unavailable_reason:playable?null:gated?'Трек требует отдельного доступа в Audius.':'Трек недоступен для воспроизведения.',artwork_url:artwork,mime:'audio/mpeg'};
   });
   const total=Number.isSafeInteger(result.total)?result.total:Number.isSafeInteger(result.count)?result.count:null;
   return {items,total_count:total,next_offset:result.data.length>=count?offset+result.data.length:null};
@@ -91,6 +91,11 @@ export function registerAudiusTrack(user,track,env){
   const now=Date.now();for(const[id,r]of references)if(r.exp<=now)references.delete(id);
   while(references.size>=4000)references.delete(references.keys().next().value);
   const id=crypto.randomUUID();references.set(id,{user,track,key:env.AUDIUS_API_KEY,exp:now+2*3600*1000});return id;
+}
+export function describeAudiusTrack(user,ticket,env){
+  const ref=references.get(ticket.file);
+  if(!ref||ref.user!==user||ref.key!==env.AUDIUS_API_KEY||ref.exp<=Date.now())throw new AudiusError(401,'Результаты устарели. Повторите поиск.');
+  return {...ref.track,source:'audius'};
 }
 export async function serveAudiusMedia(request,env,ticket){
   configuration(env);const resource=references.get(ticket.file);

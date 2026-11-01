@@ -11,6 +11,8 @@ cd "$WAVE_REPO_DIR"
 node tests/audio-cache.test.mjs
 node tests/profile.test.mjs
 node tests/http.test.mjs
+node tests/audius.test.mjs
+node tests/personal.test.mjs
 
 WAVE_DROPIN=/etc/systemd/system/wave.service.d/cache.conf
 if [ -e "$WAVE_DROPIN" ] && ! cmp -s deploy/cache.conf "$WAVE_DROPIN"; then

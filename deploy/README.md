@@ -1,7 +1,8 @@
 # VPS deployment
 
-Requires Node.js 22+ and a dedicated HTTPS hostname. The server serves both the
-Mini App and the Telegram API; no Python, database or npm dependencies are needed.
+Requires Node.js 22.13+ and a dedicated HTTPS hostname. The server serves both the
+Mini App and the Telegram API; no Python, external database server or npm dependencies are needed. Personal
+libraries use the SQLite engine bundled with Node.
 
 Before deploying, inspect the VPS, existing projects, reverse proxy, available
 ports and the actual Node path. Do not replace shared proxy configuration or
@@ -43,6 +44,8 @@ the seasonal appearance, then restart only WAVE. Halloween is the default.
 node tests/profile.test.mjs
 node tests/http.test.mjs
 node tests/audio-cache.test.mjs
+node tests/audius.test.mjs
+node tests/personal.test.mjs
 ```
 
 The profile tests use fake Telegram responses, not real user files. Real API
@@ -55,7 +58,12 @@ Only signed requests can read audio; the cache is not a public static directory.
 is finite; pagination requires “Load more”. Refresh the library after signed
 playback links expire or reopen the app after its one-hour login window expires.
 
-No persistent user accounts, subscription billing or public catalogue are added.
+Personal libraries and recent listening history are stored in
+`$STATE_DIRECTORY/library.sqlite` (`/var/lib/wave/library.sqlite` in this service).
+`WAVE_DATA_DIR` overrides the database directory. Preserve this database separately
+from the disposable audio cache. Back up with SQLite backup tooling, or stop WAVE
+before copying the database directory. Never expose it as a static directory.
+No subscription billing is implemented.
 
 ## Updating an existing service for the audio cache
 
