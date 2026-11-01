@@ -1,0 +1,5 @@
+# Add as a NEW site in your existing proxy configuration after inspection.
+# Do not replace an existing Caddyfile or other projects' configuration.
+wave.example.com {
+    reverse_proxy 127.0.0.1:8787
+}

@@ -1,0 +1,56 @@
+// Dependency-free Node.js 22+ server. Serves the Mini App and its Telegram API.
+import http from 'node:http';
+import {readFile} from 'node:fs/promises';
+import {fileURLToPath} from 'node:url';
+import {Readable} from 'node:stream';
+import {pipeline} from 'node:stream/promises';
+import api from './telegram-api.mjs';
+
+export function createServer(env = process.env) {
+  const publicOrigin = env.FRONTEND_ORIGIN;
+  if (!publicOrigin || !/^https?:\/\/[^/]+$/.test(publicOrigin)) throw new Error('Set FRONTEND_ORIGIN to the public HTTPS origin (without a trailing slash).');
+  const staticFiles = new Map([
+    ['/', ['index.html', 'text/html; charset=utf-8']],
+    ['/index.html', ['index.html', 'text/html; charset=utf-8']],
+    ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
+    ['/audio/0.wav', ['audio/0.wav', 'audio/wav']],
+    ['/audio/1.wav', ['audio/1.wav', 'audio/wav']],
+  ]);
+  return http.createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, publicOrigin);
+      if (url.origin !== publicOrigin) {res.writeHead(400); res.end(); return;}
+      if (req.method === 'GET' && url.pathname === '/config.js') {
+        res.writeHead(200, {'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store'});
+        res.end(`window.WAVE_API_BASE = ${JSON.stringify(publicOrigin)};`); return;
+      }
+      if (req.method === 'GET' && staticFiles.has(url.pathname)) {
+        const [name, type] = staticFiles.get(url.pathname);
+        const data = await readFile(fileURLToPath(new URL(`./docs/${name}`, import.meta.url)));
+        res.writeHead(200, {'Content-Type': type, 'Content-Length': data.length, 'Cache-Control': 'no-cache', 'Referrer-Policy': 'no-referrer'});
+        res.end(data); return;
+      }
+      const chunks = []; let size = 0;
+      for await (const chunk of req) {
+        size += chunk.length;
+        if (size > 20000) {res.writeHead(413); res.end(); return;}
+        chunks.push(chunk);
+      }
+      const response = await api.fetch(new Request(url, {
+        method: req.method, headers: req.headers,
+        body: ['GET', 'HEAD'].includes(req.method) ? undefined : Buffer.concat(chunks),
+      }), {...env, FRONTEND_ORIGIN: publicOrigin});
+      res.writeHead(response.status, Object.fromEntries(response.headers));
+      if (response.body) await pipeline(Readable.fromWeb(response.body), res);
+      else res.end();
+    } catch {
+      if (!res.headersSent) res.writeHead(500, {'Content-Type': 'application/json'});
+      res.end(JSON.stringify({error: 'Сервис временно недоступен.'}));
+    }
+  });
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const port = Number(process.env.PORT || 8000);
+  createServer().listen(port, process.env.HOST || '127.0.0.1', () => console.log(`WAVE listening on port ${port}`));
+}

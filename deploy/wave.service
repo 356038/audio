@@ -1,0 +1,21 @@
+[Unit]
+Description=WAVE personal Telegram music
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wave
+Group=wave
+WorkingDirectory=/opt/wave
+EnvironmentFile=/etc/wave.env
+ExecStart=/usr/bin/node /opt/wave/backend.mjs
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target
