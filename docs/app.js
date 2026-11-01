@@ -88,7 +88,7 @@ function addArtwork(holder, track) {
   holder.append(image);
 }
 function render() {
-  const query = view!=='catalog' ? $('#search').value.toLocaleLowerCase() : '';
+  const query = view!=='catalog'&&view!=='for-you' ? $('#search').value.toLocaleLowerCase() : '';
   $('#tracks').replaceChildren();
   let visibleCount = 0;
   const covers = halloween ? ['#674129','#494333','#53394b','#384d49','#584130','#42445d'] : ['#3c5847','#50513a','#41475b','#5e4540','#47534e','#5d4b59'];
@@ -258,7 +258,7 @@ function openPlayer() {
 }
 function closePlayer() { if ($('#now-playing-dialog').open) $('#now-playing-dialog').close(); }
 $('#now-playing-dialog').addEventListener('close',()=>{document.body.classList.remove('player-open');telegram?.BackButton?.hide();});
-telegram?.BackButton?.onClick(()=>{if($('#settings-dialog').open)$('#settings-dialog').close();else closePlayer();});
+telegram?.BackButton?.onClick(()=>{if($('#account-dialog').open)$('#account-dialog').close();else if($('#settings-dialog').open)$('#settings-dialog').close();else closePlayer();});
 function updateProgress() {
   const total = Number.isFinite(player.duration) ? player.duration : selectedTrack()?.duration || 0;
   const position = Number.isFinite(player.currentTime) ? player.currentTime : 0;
@@ -284,12 +284,14 @@ function describeLibrary(){
 }
 function switchView(target){
   if(target===view)return;
+  $('#search').blur();
   libraries[view].query=$('#search').value;cancelRequests();view=target;viewError='';
   const library=libraries[view];tracks=library.tracks;nextOffset=library.next;$('#search').value=library.query;
   $('#library-title').textContent=viewNames[view];
   $('#search').placeholder=view==='catalog'?t('Название трека или исполнитель'):t('Трек или исполнитель');
   $('#search').setAttribute('aria-label',view==='catalog'?t('Поиск музыки в Audius'):t('Поиск по загруженной музыке'));
   $('#search-submit').hidden=view!=='catalog';
+  $('#search-form').hidden=view==='for-you';
   for(const name of Object.keys(libraries))$('#tab-'+name).setAttribute('aria-selected',String(view===name));
   $('#profile').setAttribute('aria-label',view==='catalog'?t('Повторить поиск'):t('Обновить {section}',{section:viewNames[view]}));
   $('#tracks').setAttribute('aria-label',viewNames[view]);describeLibrary();render();
@@ -421,61 +423,80 @@ for(const event of ['playing','pause','seeking','seeked'])player.addEventListene
 for(const event of ['gesturestart','gesturechange','gestureend'])document.addEventListener(event,e=>e.preventDefault(),{passive:false});
 document.addEventListener('touchmove',e=>{if(e.touches.length>1)e.preventDefault();},{passive:false});
 document.addEventListener('dblclick',e=>{if(!e.target.closest('input,textarea'))e.preventDefault();});
-let searchGesture=null;
+let searchGesture=null,searchDismissTap=false;
 document.addEventListener('pointerdown',event=>{
-  searchGesture=null;
+  searchGesture=null;searchDismissTap=false;
   const active=document.activeElement;
   // Keep controls under the finger and keep the keyboard open during playback actions.
   if(active===$('#search')&&event.target.closest('.player-dock')){
     event.preventDefault();return;
   }
   if(active===$('#search')&&event.isPrimary!==false&&!event.target.closest('input,textarea,label,.search-form,[contenteditable]')){
-    searchGesture={id:event.pointerId,x:event.clientX,y:event.clientY,scrollX:window.scrollX,scrollY:window.scrollY,moved:false};
+    searchGesture={id:event.pointerId,x:event.clientX,y:event.clientY,scrollX:window.scrollX,scrollY:window.scrollY,contentY:$('.shell').scrollTop,moved:false};
   }
 },{capture:true});
 document.addEventListener('pointermove',event=>{
   if(searchGesture?.id===event.pointerId&&Math.hypot(event.clientX-searchGesture.x,event.clientY-searchGesture.y)>8)searchGesture.moved=true;
 },{capture:true,passive:true});
-document.addEventListener('pointercancel',()=>{searchGesture=null;},{capture:true});
+document.addEventListener('pointercancel',()=>{searchGesture=null;searchDismissTap=false;},{capture:true});
 document.addEventListener('pointerup',event=>{
   const gesture=searchGesture;searchGesture=null;
   if(!gesture||gesture.id!==event.pointerId||gesture.moved)return;
   if(Math.hypot(event.clientX-gesture.x,event.clientY-gesture.y)>8||Math.abs(window.scrollY-gesture.scrollY)>3||Math.abs(window.scrollX-gesture.scrollX)>3)return;
-  if(document.activeElement===$('#search')&&!event.target.closest('input,textarea,label,.search-form,[contenteditable]'))$('#search').blur();
+  if(Math.abs($('.shell').scrollTop-gesture.contentY)>3)return;
+  searchDismissTap=true;
+},{capture:true});
+// Wait until click has a target before restoring the document scroll. Otherwise
+// unlocking on pointerup can move the tapped row before its click is dispatched.
+document.addEventListener('click',event=>{
+  const dismiss=searchDismissTap;searchDismissTap=false;
+  if(dismiss&&document.activeElement===$('#search')&&!event.target.closest('input,textarea,label,.search-form,[contenteditable]'))$('#search').blur();
 },{capture:true});
 // Desktop mouse focus should also wait until a tap is distinguished from a drag.
 document.addEventListener('mousedown',event=>{
   if(document.activeElement===$('#search')&&!event.target.closest('input,textarea,label,.search-form,[contenteditable]'))event.preventDefault();
 },{capture:true});
 
-// A keyboard may resize or pan the visible viewport independently of the page.
-// Move the same player, without replacing the audio element or its source.
-let searchLayoutFrame=0,revealSearchField=false;
+// Scroll content inside a locked viewport during search. The player is a sibling
+// of the scroller, so iOS rubber-banding cannot carry it offscreen or jitter it.
+let searchLayoutFrame=0,revealSearchField=false,searchSession=null;
+function enterSearch(){
+  if(!searchSession){
+    searchSession={x:window.scrollX,y:window.scrollY};
+    document.documentElement.classList.add('search-focused');
+    window.scrollTo(0,0);$('.shell').scrollTop=searchSession.y;
+  }
+  scheduleSearchLayout(true);
+}
+function leaveSearch(){
+  if(!searchSession)return;
+  const y=$('.shell').scrollTop,x=searchSession.x;searchSession=null;
+  document.documentElement.classList.remove('search-focused');
+  document.documentElement.style.removeProperty('--search-viewport-height');
+  window.scrollTo(x,y);
+}
 function scheduleSearchLayout(reveal=false){
   revealSearchField||=reveal===true;
   if(searchLayoutFrame)return;
   searchLayoutFrame=requestAnimationFrame(()=>{
     searchLayoutFrame=0;
     const shouldReveal=revealSearchField;revealSearchField=false;
-    const focused=document.activeElement===$('#search');
-    document.documentElement.classList.toggle('search-focused',focused);
-    if(!focused){document.documentElement.style.removeProperty('--search-dock-top');return;}
-    const viewport=window.visualViewport,top=viewport?.offsetTop||0;
-    document.documentElement.style.setProperty('--search-dock-top',`${top}px`);
+    if(!searchSession||document.activeElement!==$('#search'))return;
+    const viewport=window.visualViewport;
+    document.documentElement.style.setProperty('--search-viewport-height',`${viewport?.height||window.innerHeight}px`);
     // Reveal on focus/keyboard resize, never pull the page back during scrolling.
     if(!shouldReveal)return;
     const field=$('#search').getBoundingClientRect();
     const visibleTop=$('.player-dock').getBoundingClientRect().bottom+12;
-    const visibleBottom=top+(viewport?.height||window.innerHeight)-16;
-    if(field.top<visibleTop)window.scrollBy(0,field.top-visibleTop);
-    else if(field.bottom>visibleBottom)window.scrollBy(0,field.bottom-visibleBottom);
+    const visibleBottom=(viewport?.height||window.innerHeight)-16;
+    if(field.top<visibleTop)$('.shell').scrollTop+=field.top-visibleTop;
+    else if(field.bottom>visibleBottom)$('.shell').scrollTop+=field.bottom-visibleBottom;
   });
 }
-$('#search').addEventListener('focus',()=>scheduleSearchLayout(true));
-$('#search').addEventListener('blur',()=>scheduleSearchLayout());
+$('#search').addEventListener('focus',enterSearch);
+$('#search').addEventListener('blur',leaveSearch);
 window.addEventListener('resize',()=>scheduleSearchLayout(true));
 window.visualViewport?.addEventListener('resize',()=>scheduleSearchLayout(true));
-window.visualViewport?.addEventListener('scroll',()=>scheduleSearchLayout());
 syncTelegramLayout();
 requestAppFullscreen();
 
@@ -483,3 +504,19 @@ $('#language-value').textContent=t('Автоматически')+' · '+(languag
 $('#settings').onclick=()=>{$('#search').blur();$('#settings-dialog').showModal();telegram?.BackButton?.show();};
 $('#settings-dialog').addEventListener('close',()=>{if(!$('#now-playing-dialog').open)telegram?.BackButton?.hide();});
 $('#close-settings').onclick=()=>$('#settings-dialog').close();
+
+$('#account').onclick=async()=>{
+  $('#search').blur();$('#account-dialog').showModal();telegram?.BackButton?.show();
+  $('#account-status').textContent=t('Загружаем…');$('#account-name').textContent='';$('#account-username').textContent='';$('#account-saved').textContent='';
+  try{
+    const result=await personalRequest('/api/account',{}),user=result.user;
+    const name=[user.first_name,user.last_name].filter(Boolean).join(' ');
+    $('#account-name').textContent=name||t('Пользователь Telegram');
+    $('#account-username').textContent=user.username?'@'+user.username:'';
+    $('#account-avatar').textContent=[user.first_name,user.last_name].filter(Boolean).map(part=>Array.from(part)[0]).slice(0,2).join('')||'W';
+    $('#account-saved').textContent=t('Сохранено треков: {count}',{count:result.saved_count});$('#account-status').textContent='';
+  }catch(error){$('#account-status').textContent=t(error.name==='AbortError'?'Сервис не успел ответить. Попробуйте ещё раз.':error instanceof TypeError?'Нет связи с сервером. Попробуйте ещё раз.':error.message);}
+};
+$('#close-account').onclick=()=>$('#account-dialog').close();
+$('#account-dialog').addEventListener('close',()=>{if(!$('#now-playing-dialog').open&&!$('#settings-dialog').open)telegram?.BackButton?.hide();});
+$('#account-library').onclick=()=>{$('#account-dialog').close();switchView('saved');};

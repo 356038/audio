@@ -1,6 +1,10 @@
 // UI translations only: track titles and artist names are never passed through this table.
 (() => {
   const english={
+  "Профиль":"Profile",
+  "Закрыть профиль":"Close profile",
+  "Пользователь Telegram":"Telegram user",
+  "Сохранено треков: {count}":"Saved tracks: {count}",
   "Звучит": "Sounds",
   "до мурашек.": "like chills.",
   "Твоя музыка. Тёмная сторона. Включай — эта ночь на повторе.": "Your music. After dark. Hit play — tonight is on repeat.",

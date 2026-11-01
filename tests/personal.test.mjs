@@ -10,8 +10,8 @@ import api from '../telegram-api.mjs';
 const bot='123:personal-fixture',origin='https://wave.example';
 const originalFetch=globalThis.fetch;
 afterEach(()=>{globalThis.fetch=originalFetch;});
-function signed(user=42){
- const data=new URLSearchParams({auth_date:String(Math.floor(Date.now()/1000)),user:JSON.stringify({id:user})});
+function signed(user=42,info={}){
+ const data=new URLSearchParams({auth_date:String(Math.floor(Date.now()/1000)),user:JSON.stringify({id:user,...info})});
  const check=[...data.entries()].sort().map(([k,v])=>`${k}=${v}`).join('\n');
  const key=createHmac('sha256','WebAppData').update(bot).digest();
  data.set('hash',createHmac('sha256',key).update(check).digest('hex'));return data.toString();
@@ -68,6 +68,7 @@ test('library validates Telegram identity and signed track ownership; saving nev
 test('saved Audius descriptors regenerate stream tickets after a process restart without another search',async()=>{
  const store=new PersonalStore(':memory:');let searches=0;
  const env={BOT_TOKEN:bot,PERSONAL_STORE:store,AUDIUS_API_KEY:'persistence-key',AUDIUS_BEARER_TOKEN:'fixture',AUDIUS_HTTP:async url=>{
+  if(url.pathname==='/v1/users/search')return Response.json({data:[]});
   if(url.pathname.endsWith('/search')){searches++;return Response.json({data:[song('A1')]});}
   return new Response(new Uint8Array([1,2]),{status:206,headers:{'Content-Type':'audio/mpeg','Content-Range':'bytes 0-1/100'}});
  }};
@@ -138,5 +139,19 @@ test('missing style metadata uses verified artist matches without inventing a ge
   store.record(42,{...descriptor,genre:''},'no-style-session-1234',20);
   const result=await recommendations(env,42,store);
   assert.deepEqual(result.items.map(t=>t.id),['audius:A3']);assert.match(result.reason,/не указан жанр/);
+ }finally{store.close();}
+});
+
+
+test('account uses only authenticated Telegram identity and its own saved count',async()=>{
+ const store=new PersonalStore(':memory:'),env={BOT_TOKEN:bot,PERSONAL_STORE:store};
+ globalThis.fetch=()=>{throw Error('account must not call Telegram');};
+ try{
+  store.save(42,descriptor,true);
+  assert.equal((await api.fetch(request('/api/account',{init_data:''}),env)).status,401);
+  const body={init_data:signed(42,{first_name:'Anna',last_name:'Wave',username:'annawave'}),user_id:99};
+  const response=await api.fetch(request('/api/account',body),env),result=await response.json();
+  assert.deepEqual(result,{user:{id:42,first_name:'Anna',last_name:'Wave',username:'annawave'},saved_count:1});
+  assert.equal((await(await api.fetch(request('/api/account',{},99),env)).json()).saved_count,0);
  }finally{store.close();}
 });

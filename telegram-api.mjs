@@ -1,5 +1,5 @@
 // Telegram API service. BOT_TOKEN is a server secret, never a browser setting.
-import {searchAudius,AudiusError,registerAudiusTrack,serveAudiusMedia,describeAudiusTrack} from './audius.mjs';
+import {searchCatalogueAudius,AudiusError,registerAudiusTrack,serveAudiusMedia,describeAudiusTrack} from './audius.mjs';
 import {recommendations} from './recommendations.mjs';
 const encoder = new TextEncoder();
 const MAX_FILE = 20 * 1024 * 1024;
@@ -151,11 +151,15 @@ async function route(request, env) {
   const url = new URL(request.url);
   if (url.pathname === '/health' && request.method === 'GET') return Response.json({ok: true, configured: Boolean(env.BOT_TOKEN)});
   if (!env.BOT_TOKEN) throw new ApiError(503, 'Сервис музыки ещё не подключён.');
-  if(['/api/library','/api/library/save','/api/history','/api/recommendations'].includes(url.pathname)&&request.method==='POST'){
+  if(['/api/library','/api/library/save','/api/history','/api/recommendations','/api/account'].includes(url.pathname)&&request.method==='POST'){
     const text=await request.text();if(text.length>20000)throw new ApiError(413,'Слишком большой запрос.');
     let body;try{body=JSON.parse(text);}catch{throw new ApiError(400,'Некорректный запрос.');}
     const user=await authenticate(body?.init_data,env.BOT_TOKEN),store=env.PERSONAL_STORE;
     if(!store)throw new ApiError(503,'Личная библиотека пока недоступна.');
+    if(url.pathname==='/api/account'){
+      const text=value=>typeof value==='string'?value.slice(0,200):'';
+      return Response.json({user:{id:user.id,first_name:text(user.first_name),last_name:text(user.last_name),username:text(user.username)},saved_count:store.count(user.id)});
+    }
     if(url.pathname==='/api/library'){
       const offset=body.offset??0;if(!Number.isInteger(offset)||offset<0||offset>100000)throw new ApiError(400,'Некорректная страница.');
       const items=store.list(user.id,offset),total=store.count(user.id);
@@ -179,7 +183,7 @@ async function route(request, env) {
     const text=await request.text();if(text.length>20000)throw new ApiError(413,'Слишком большой запрос.');
     let body;try{body=JSON.parse(text);}catch{throw new ApiError(400,'Некорректный запрос.');}
     const user=await authenticate(body?.init_data,env.BOT_TOKEN);
-    const result=await searchAudius(env,{query:body.query,offset:body.offset??0,count:20});
+    const result=await searchCatalogueAudius(env,{query:body.query,offset:body.offset??0,count:20});
     const tracks=await Promise.all(result.items.map(item=>presentTrack(env,user.id,item,url.origin)));
     return Response.json({tracks,total_count:result.total_count,next_offset:result.next_offset});
   }
