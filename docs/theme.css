@@ -78,7 +78,7 @@ html,body{touch-action:pan-x pan-y;-webkit-text-size-adjust:100%;overscroll-beha
 .source-tabs{max-width:100%;overflow-x:auto;scrollbar-width:none}.source-tabs::-webkit-scrollbar{display:none}.source-tabs button{white-space:nowrap;flex-shrink:0}
 .track{padding-right:102px}.row-play{right:51px}.row-save{position:absolute;right:7px;top:50%;transform:translateY(-50%);width:38px;height:38px;border:0;background:transparent;color:var(--muted)}.row-save[aria-pressed=true],#full-save[aria-pressed=true]{color:var(--mint)}
 #full-save{width:44px;height:44px;border:0}
-.toast{position:fixed;left:50%;bottom:calc(125px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:100;background:#eee7de;color:#241b14;box-shadow:0 10px 40px #0005;border-radius:14px;padding:12px 18px;max-width:calc(100vw - 32px);font-size:12px;text-align:center}
+.toast{position:fixed;left:50%;bottom:calc(125px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:100;background:var(--surface);color:var(--text);border:1px solid var(--line);box-shadow:0 10px 40px #0005;border-radius:14px;padding:12px 18px;max-width:calc(100vw - 32px);font-size:12px;text-align:center}
 @media(max-width:700px){.track{padding-right:96px}.row-play{right:47px;width:44px;height:44px}.row-save{right:3px;width:44px;height:44px}.source-tabs{width:100%;gap:2px;padding:4px}.source-tabs button{padding:10px 13px;font-size:11px}.search-form input[type=search]{padding-left:40px;font-size:16px}}
 
 /* Keep transport available above search while the software keyboard is open. */
@@ -119,9 +119,9 @@ html.search-focused{height:100%;overflow:hidden;overscroll-behavior:none}
 
 .row-save-notice{position:absolute;top:calc(100% - 2px);right:8px;z-index:4;max-width:calc(100% - 16px);padding:7px 11px;border:1px solid var(--line);border-radius:9px;background:var(--surface);color:var(--mint);box-shadow:0 5px 18px #0005;font-size:11px;line-height:1.4;pointer-events:none}
 
-.brand-mark .brand-bar{transform-box:fill-box;transform-origin:center;animation:brand-wave .85s ease-in-out infinite alternate;animation-play-state:paused}
+.brand-mark .brand-bar{transform-box:fill-box;transform-origin:center;transform:scaleY(1);animation:none}
 .brand-mark .brand-bar:nth-child(2){animation-delay:-.35s}.brand-mark .brand-bar:nth-child(3){animation-delay:-.6s}.brand-mark .brand-bar:nth-child(4){animation-delay:-.15s}.brand-mark .brand-bar:nth-child(5){animation-delay:-.45s}
-.is-playing .brand-mark .brand-bar{animation-play-state:running}
+.is-playing .brand-mark .brand-bar{animation-name:brand-wave;animation-duration:.85s;animation-timing-function:ease-in-out;animation-iteration-count:infinite;animation-direction:alternate;animation-play-state:running}
 @keyframes brand-wave{0%{transform:scaleY(1)}50%{transform:scaleY(.4)}100%{transform:scaleY(.85)}}
 
 /* Compact chrome: plain icons and small dialogs. */
@@ -138,7 +138,7 @@ html.search-focused{height:100%;overflow:hidden;overscroll-behavior:none}
 
 /* Four compact feature cards; the track slides left without moving the page. */
 .hero.hero-carousel{display:block;min-height:0;position:relative;margin-top:12px;margin-bottom:24px}
-.hero-carousel-track{display:flex;transition:transform .45s cubic-bezier(.22,.7,.22,1);will-change:transform}
+.hero-carousel-track{display:flex;transition:transform 2s cubic-bezier(.4,0,.2,1);will-change:transform}
 .hero-carousel .hero-slide{display:grid;grid-template-columns:1.15fr 1fr;flex:0 0 100%;width:100%;min-width:0;min-height:285px;overflow:hidden;position:relative}
 .hero-carousel .hero-copy{padding:28px 30px 48px;min-width:0;z-index:2}
 .hero-carousel .hero-title{margin:0;font-size:clamp(30px,4vw,46px);font-weight:550;line-height:1.06;letter-spacing:-1.8px;position:relative;width:340px}
@@ -164,3 +164,6 @@ html.search-focused{height:100%;overflow:hidden;overscroll-behavior:none}
 @media(max-width:700px){.hero-carousel .hero-slide{grid-template-columns:1fr .55fr;min-height:250px}.hero-carousel .hero-copy{padding:22px 20px 42px}.hero-carousel .hero-title{font-size:30px;width:250px;letter-spacing:-1.3px}.hero-carousel .hero-description{font-size:11px;max-width:190px;margin:12px 0 16px}.hero-carousel .hero-art{min-height:250px;opacity:.62}.hero-carousel .hero-carousel-nav{left:18px;bottom:10px}.hero-pause{bottom:10px;right:14px}.hero-carousel .halloween-art{transform:scale(.6);left:-44px;top:-3px}.discovery-disc{right:-62px;top:25px;width:195px;height:195px}.discovery-search{right:-44px;top:48px;width:155px;height:155px}.floating-note{right:82px;top:44px;width:28px;height:28px}.collection-card{right:-26px;top:50px;width:123px;height:148px}.card-back{right:-42px;top:39px}.card-front svg{width:60px;height:60px}.collection-heart{right:-31px;top:155px;width:60px;height:60px}.profile-orbit{right:-64px;top:26px;width:190px;height:190px}.profile-disc{right:-40px;top:46px;width:150px;height:150px}.profile-disc svg{width:72px;height:72px}.profile-note{right:-36px;top:157px;width:50px;height:50px}}
 @media(max-width:360px){.hero-carousel .hero-title{font-size:27px;width:226px}.hero-carousel .hero-copy{padding-left:17px}.hero-carousel .hero-description{max-width:165px}.hero-carousel .hero-action{font-size:10px;padding:10px 13px}}
 @media(prefers-reduced-motion:reduce){.hero-carousel-track{transition:none;will-change:auto}}
+
+.library-stage{overflow-anchor:none}.library-stage.is-resizing{overflow:hidden;transition:height .4s ease}
+#library-content{display:flow-root}
