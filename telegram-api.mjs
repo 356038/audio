@@ -1,4 +1,5 @@
 // Telegram API service. BOT_TOKEN is a server secret, never a browser setting.
+import {searchAudius,AudiusError,registerAudiusTrack,serveAudiusMedia} from './audius.mjs';
 const encoder = new TextEncoder();
 const MAX_FILE = 20 * 1024 * 1024;
 const now = () => Math.floor(Date.now() / 1000);
@@ -81,9 +82,9 @@ async function telegram(env, method, body) {
   return data.result;
 }
 
-async function ticketFor(env, userId, audio, type = 'audio') {
+async function ticketFor(env, userId, audio, type = 'audio', source = 'telegram') {
   const payload = base64(JSON.stringify({user: userId, file: audio.file_id, type,
-    mime: type==='audio' ? audioMime(audio.mime_type,audio.file_name) : null, exp: now()+7200}));
+    source, mime: type==='audio' ? audioMime(audio.mime_type,audio.file_name) : null, exp: now()+7200}));
   return `${payload}.${hex(await sign(env.BOT_TOKEN, `wave-stream:${payload}`))}`;
 }
 function audioMime(value,path='') {
@@ -119,6 +120,21 @@ async function route(request, env) {
   const url = new URL(request.url);
   if (url.pathname === '/health' && request.method === 'GET') return Response.json({ok: true, configured: Boolean(env.BOT_TOKEN)});
   if (!env.BOT_TOKEN) throw new ApiError(503, 'Сервис музыки ещё не подключён.');
+  if(url.pathname==='/api/search'&&request.method==='POST') {
+    const text=await request.text();if(text.length>20000)throw new ApiError(413,'Слишком большой запрос.');
+    let body;try{body=JSON.parse(text);}catch{throw new ApiError(400,'Некорректный запрос.');}
+    const user=await authenticate(body?.init_data,env.BOT_TOKEN);
+    const result=await searchAudius(env,{query:body.query,offset:body.offset??0,count:20});
+    const tracks=await Promise.all(result.items.map(async item=>{
+      const reference=registerAudiusTrack(user.id,item,env);
+      const audio={file_id:reference,mime_type:item.mime};
+      return {id:item.id,source:'audius',title:item.title,performer:item.performer,duration:item.duration,
+        playable:item.playable,unavailable_reason:item.unavailable_reason,
+        stream_url:item.playable?`${url.origin}/api/stream?ticket=${encodeURIComponent(await ticketFor(env,user.id,audio,'audio','audius'))}`:null,
+        artwork_url:item.artwork_url?`${url.origin}/api/artwork?ticket=${encodeURIComponent(await ticketFor(env,user.id,audio,'artwork','audius'))}`:null};
+    }));
+    return Response.json({tracks,total_count:result.total_count,next_offset:result.next_offset});
+  }
   if (url.pathname === '/api/profile-audios' && request.method === 'POST') {
     const bodyText = await request.text();
     if (bodyText.length > 20000) throw new ApiError(413, 'Слишком большой запрос.');
@@ -146,6 +162,7 @@ async function route(request, env) {
     const prepare = url.pathname === '/api/prepare';
     const artwork = url.pathname === '/api/artwork';
     const ticket = await readTicket(env, url.searchParams.get('ticket'));
+    if(ticket.source==='audius')return serveAudiusMedia(request,env,ticket);
     if ((ticket.type || 'audio') !== (artwork ? 'artwork' : 'audio')) throw new ApiError(401, 'Ссылка не подходит для этого файла.');
     const audioCache = artwork ? null : env.AUDIO_CACHE;
     const cacheKey = `${env.BOT_TOKEN}:${ticket.file}`;
@@ -219,7 +236,8 @@ export default {
     try {
       response = request.method === 'OPTIONS' ? new Response(null, {status: 204}) : await route(request, env);
     } catch (error) {
-      response = Response.json({error: error instanceof ApiError ? error.message : 'Внутренняя ошибка сервиса.'}, {status: error instanceof ApiError ? error.status : 500});
+      const known=error instanceof ApiError||error instanceof AudiusError;
+      response = Response.json({error: known ? error.message : 'Внутренняя ошибка сервиса.'}, {status: known ? error.status : 500});
     }
     const headers = new Headers(response.headers);
     headers.set('Access-Control-Allow-Origin', allowed);

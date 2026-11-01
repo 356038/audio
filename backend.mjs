@@ -8,6 +8,7 @@ import api from './telegram-api.mjs';
 import {AudioCache} from './audio-cache.mjs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {audiusFetch} from './audius.mjs';
 
 export function createServer(env = process.env) {
   const publicOrigin = env.FRONTEND_ORIGIN;
@@ -19,7 +20,9 @@ export function createServer(env = process.env) {
     ['/theme.css', ['theme.css', 'text/css; charset=utf-8']],
   ]);
   const cache = env.WAVE_CACHE_DISABLED === '1' ? null : new AudioCache(
-    env.WAVE_CACHE_DIR || join(env.STATE_DIRECTORY || tmpdir(), 'wave-audio-cache'));
+    env.WAVE_CACHE_DIR || join(env.STATE_DIRECTORY || tmpdir(), 'wave-audio-cache'),{
+      fetcher:(url,options)=>new URL(url).hostname==='api.telegram.org'?fetch(url,options):audiusFetch(url,options,env),
+    });
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, publicOrigin);
@@ -27,7 +30,7 @@ export function createServer(env = process.env) {
       if (req.method === 'GET' && url.pathname === '/config.js') {
         res.writeHead(200, {'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store'});
         const theme = env.WAVE_THEME === 'default' ? 'default' : 'halloween';
-        res.end(`window.WAVE_API_BASE = ${JSON.stringify(publicOrigin)};window.WAVE_THEME = ${JSON.stringify(theme)};`); return;
+        res.end(`window.WAVE_API_BASE = ${JSON.stringify(publicOrigin)};window.WAVE_THEME = ${JSON.stringify(theme)};window.WAVE_SEARCH_CONFIGURED = ${Boolean(env.AUDIUS_API_KEY&&env.AUDIUS_BEARER_TOKEN)};`); return;
       }
       if (req.method === 'GET' && staticFiles.has(url.pathname)) {
         const [name, type] = staticFiles.get(url.pathname);

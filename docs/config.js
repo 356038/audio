@@ -2,3 +2,5 @@
 window.WAVE_API_BASE = '';
 // Seasonal appearance: 'halloween' or 'default'. No playback logic changes.
 window.WAVE_THEME = 'halloween';
+// Enable only after the backend has an Audius connection.
+window.WAVE_SEARCH_CONFIGURED = false;

@@ -4,8 +4,14 @@ const player = $('#player');
 const telegram = window.Telegram?.WebApp;
 const apiBase = (window.WAVE_API_BASE || '').replace(/\/$/, '');
 const halloween = window.WAVE_THEME !== 'default';
+$('#tab-catalog').hidden=window.WAVE_SEARCH_CONFIGURED!==true;
 document.documentElement.dataset.theme = halloween ? 'halloween' : 'default';
-let tracks = [], current = -1, nextOffset = null, busy = false, seeking = false;
+let tracks = [], queue = [], current = -1, nextOffset = null, busy = false, seeking = false;
+let view='profile', requestVersion=0, requestController=null, searchTimer=null, viewError='';
+const libraries={profile:{tracks:[],next:null,query:'',total:0,loaded:false},catalog:{tracks:[],next:null,query:'',total:0,loaded:false}};
+function selectedTrack(){return queue[current];}
+function sameTrack(track){return Boolean(track && selectedTrack() && track.id===selectedTrack().id);}
+
 let actuallyPlaying = false;
 let selectionVersion=0, playAttempt=0, errorController=null;
 let warmController = null;
@@ -49,7 +55,7 @@ function addArtwork(holder, track) {
   holder.append(image);
 }
 function render() {
-  const query = $('#search').value.toLocaleLowerCase();
+  const query = view==='profile' ? $('#search').value.toLocaleLowerCase() : '';
   $('#tracks').replaceChildren();
   let visibleCount = 0;
   const covers = halloween ? ['#674129','#494333','#53394b','#384d49','#584130','#42445d'] : ['#3c5847','#50513a','#41475b','#5e4540','#47534e','#5d4b59'];
@@ -57,28 +63,28 @@ function render() {
     if (!`${track.title} ${track.performer}`.toLocaleLowerCase().includes(query)) return;
     visibleCount++;
     const li = document.createElement('li'), button = document.createElement('button'), detail = document.createElement('small');
-    li.className = `track-row${current === index ? ' selected' : ''}`;
+    li.className = `track-row${sameTrack(track) ? ' selected' : ''}`;
     li.dataset.index = index;
-    button.type = 'button'; button.className = `track${current === index ? ' active' : ''}`;
+    button.type = 'button'; button.className = `track${sameTrack(track) ? ' active' : ''}`;
     button.disabled = !track.playable;
     button.setAttribute('aria-label', `Открыть ${track.title}${track.performer ? ' — '+track.performer : ''}`);
     const art = document.createElement('span'); art.className = 'track-art'; art.style.setProperty('--cover', covers[index % covers.length]); art.setAttribute('aria-hidden','true');
     art.append(icon('i-note')); addArtwork(art, track);
     const copy = document.createElement('span'); copy.className = 'track-copy';
     const title = document.createElement('span'); title.className = 'track-title'; title.textContent = track.title;
-    detail.className = 'track-detail'; detail.textContent = [track.performer || 'Неизвестный исполнитель', track.playable ? '' : 'Файл превышает лимит Telegram'].filter(Boolean).join(' · ');
+    detail.className = 'track-detail'; detail.textContent = [track.performer || 'Неизвестный исполнитель', track.playable ? '' : track.unavailable_reason || 'Файл превышает лимит Telegram'].filter(Boolean).join(' · ');
     const time = document.createElement('span'); time.className = 'track-duration'; time.textContent = duration(track.duration);
     copy.append(title, detail); button.append(art, copy, time, equalizer());
-    button.onclick = () => { if (current !== index) select(index, true); openPlayer(); };
+    button.onclick = () => { if (!sameTrack(track)||player.error) select(index, true); openPlayer(); };
     const toggle = document.createElement('button'); toggle.type='button'; toggle.className='row-play icon-button'; toggle.dataset.index = index;
     toggle.disabled = !track.playable;
-    toggle.onclick = () => current === index ? togglePlayback() : select(index, true);
+    toggle.onclick = () => sameTrack(track)&&!player.error ? togglePlayback() : select(index, true);
     li.append(button, toggle); $('#tracks').append(li);
   });
   $('#track-count').textContent = String(tracks.length);
   $('#play-all').disabled = !tracks.some(track => track.playable);
   $('#empty-state').hidden = visibleCount > 0 || busy;
-  $('#empty-message').textContent = query ? 'Ничего не нашлось. Попробуй другой запрос.' : 'Здесь будут треки из твоего профиля Telegram.';
+  $('#empty-message').textContent = viewError || (view==='catalog' ? (libraries.catalog.loaded ? 'По этому запросу ничего не найдено.' : 'Введи название трека или исполнителя.') : query ? 'Ничего не нашлось. Попробуй другой запрос.' : 'Здесь будут треки из твоего профиля Telegram.');
   $('#more').hidden = nextOffset === null;
   $('#more').disabled = busy;
   $('#profile').disabled = busy;
@@ -87,16 +93,16 @@ function render() {
 }
 function syncSelection() {
   document.querySelectorAll('.track-row').forEach(row => {
-    const selected = Number(row.dataset.index) === current;
+    const selected = sameTrack(tracks[Number(row.dataset.index)]);
     row.classList.toggle('selected', selected);
     row.querySelector('.track').classList.toggle('active', selected);
   });
   syncControls();
 }
-function prepareTrack(index) {
+function prepareTrack(index,collection=queue) {
   if (navigator.connection?.saveData || document.visibilityState === 'hidden') return;
-  const track = tracks[index];
-  if (!track?.stream_url || index === current || prepared.has(track.stream_url)) return;
+  const track = collection[index];
+  if (!track?.stream_url || sameTrack(track) || prepared.has(track.stream_url)) return;
   const url = new URL(track.stream_url);
   if (url.pathname !== '/api/stream') return;
   warmController?.abort();warmController = new AbortController();
@@ -112,8 +118,8 @@ function prepareTrack(index) {
 }
 function prepareNext() {
   if(current<0)return;
-  let index=tracks.findIndex((track,i)=>i>current&&track.playable);
-  if(index<0&&$('#repeat').checked)index=tracks.findIndex(track=>track.playable);
+  let index=queue.findIndex((track,i)=>i>current&&track.playable);
+  if(index<0&&$('#repeat').checked)index=queue.findIndex(track=>track.playable);
   prepareTrack(index);
 }
 function syncControls() {
@@ -125,7 +131,7 @@ function syncControls() {
     button.disabled = current < 0;
   }
   document.querySelectorAll('.row-play').forEach(button => {
-    const active = Number(button.dataset.index) === current && playing;
+    const active = sameTrack(tracks[Number(button.dataset.index)]) && playing;
     button.replaceChildren(icon(active ? 'i-pause' : 'i-play'));
     button.setAttribute('aria-label', `${active ? 'Пауза' : 'Воспроизвести'}: ${tracks[Number(button.dataset.index)].title}`);
   });
@@ -141,7 +147,7 @@ async function showMediaError(version=selectionVersion) {
   errorController?.abort();const controller=new AbortController();errorController=controller;
   const timer=setTimeout(()=>controller.abort(),15000);
   try {
-    const response=await fetch(tracks[current].stream_url,{headers:{Range:'bytes=0-1'},cache:'no-store',signal:controller.signal});
+    const response=await fetch(selectedTrack().stream_url,{headers:{Range:'bytes=0-1'},cache:'no-store',signal:controller.signal});
     let message;
     if(!response.ok&&response.headers.get('Content-Type')?.includes('application/json')) {
       const result=await response.json();message=result.error;
@@ -172,14 +178,15 @@ function togglePlayback() {
   if (player.paused) play();
   else { playAttempt++;player.pause(); actuallyPlaying=false; syncControls(); }
 }
-function select(index, autoplay) {
-  const track = tracks[index];
+function select(index, autoplay,collection=tracks) {
+  const track = collection[index];
   if (!track?.playable) return;
   selectionVersion++;playAttempt++;errorController?.abort();errorController=null;seeking=false;
-  actuallyPlaying = false; current = index; player.src = track.stream_url;
+  actuallyPlaying = false; queue=collection;current = index; player.src = track.stream_url;
   setStatus('Загружаем трек…');
   $('.player-dock').classList.add('has-track');
   $('#title').textContent = track.title; $('#performer').textContent = track.performer || 'Музыка профиля';
+  $('#full-queue-title').textContent=track.source==='audius'?'Результаты поиска Audius':'Моя коллекция';
   $('#full-title').textContent = track.title; $('#full-performer').textContent = track.performer || 'Неизвестный исполнитель';
   $('.now-art').querySelectorAll('img').forEach(image=>image.remove()); $('.now-art').classList.remove('has-artwork');
   $('#full-artwork').querySelectorAll('img').forEach(image=>image.remove()); $('#full-artwork').classList.remove('has-artwork');
@@ -192,30 +199,31 @@ function select(index, autoplay) {
   updateProgress(); syncSelection(); if (autoplay) play();
 }
 function next(manual = true) {
-  for (let step=1;step<=tracks.length;step++) {
+  for (let step=1;step<=queue.length;step++) {
     const candidate = current+step;
-    if (!manual && !$('#repeat').checked && candidate >= tracks.length) break;
-    const index = candidate % tracks.length;
-    if (tracks[index].playable) { select(index, true); return; }
+    if (!manual && !$('#repeat').checked && candidate >= queue.length) break;
+    const index = candidate % queue.length;
+    if (queue[index].playable) { select(index, true,queue); return; }
   }
-  statusElement().textContent = nextOffset === null ? 'Очередь завершена' : 'Загруженная очередь завершена. Нажмите «Загрузить ещё».';
+  const more=queue===libraries.profile.tracks?libraries.profile.next:queue===libraries.catalog.tracks?libraries.catalog.next:null;
+  statusElement().textContent = more === null ? 'Очередь завершена' : 'Загруженная очередь завершена. Нажмите «Загрузить ещё».';
 }
 function previous() {
   if (player.currentTime > 3) { player.currentTime = 0; updateProgress(); return; }
-  for (let i=current-1;i>=0;i--) if(tracks[i].playable) {select(i,true);return;}
+  for (let i=current-1;i>=0;i--) if(queue[i].playable) {select(i,true,queue);return;}
   if(current>=0) {player.currentTime=0;updateProgress();}
 }
 function openPlayer() {
   if (current < 0 || $('#now-playing-dialog').open) return;
   $('#now-playing-dialog').showModal(); document.body.classList.add('player-open');
-  if (!$('#full-artwork').querySelector('img')) addArtwork($('#full-artwork'), tracks[current]);
+  if (!$('#full-artwork').querySelector('img')) addArtwork($('#full-artwork'), selectedTrack());
   telegram?.BackButton?.show();
 }
 function closePlayer() { if ($('#now-playing-dialog').open) $('#now-playing-dialog').close(); }
 $('#now-playing-dialog').addEventListener('close',()=>{document.body.classList.remove('player-open');telegram?.BackButton?.hide();});
 telegram?.BackButton?.onClick(closePlayer);
 function updateProgress() {
-  const total = Number.isFinite(player.duration) ? player.duration : tracks[current]?.duration || 0;
+  const total = Number.isFinite(player.duration) ? player.duration : selectedTrack()?.duration || 0;
   const position = Number.isFinite(player.currentTime) ? player.currentTime : 0;
   $('#elapsed').textContent = duration(position); $('#total-time').textContent = duration(total);
   $('#seek').disabled = !(Number.isFinite(player.duration) && player.duration>0);
@@ -225,39 +233,79 @@ function updateProgress() {
   $('#seek').style.setProperty('--progress', progress);
   $('.dock-progress').style.setProperty('--progress', progress);
 }
-function reset() {
-  selectionVersion++;playAttempt++;errorController?.abort();errorController=null;
-  warmController?.abort();prepared.clear();
-  closePlayer(); player.pause(); player.removeAttribute('src'); player.load(); tracks=[]; current=-1; nextOffset=null; actuallyPlaying=false;
-  $('#title').textContent = 'Поймай свою волну'; $('#performer').textContent = 'Выбери трек из коллекции';
-  $('#next').disabled=true; $('#open-player').disabled=true; $('#search').value='';
-  $('.now-art').querySelectorAll('img').forEach(image=>image.remove()); $('.now-art').classList.remove('has-artwork');
-  if ('mediaSession' in navigator) navigator.mediaSession.metadata = null;
-  statusElement().textContent='Готов к воспроизведению'; $('.player-dock').classList.remove('has-track'); render();
+function cancelRequests() {
+  requestVersion++;requestController?.abort();requestController=null;clearTimeout(searchTimer);busy=false;
 }
-async function loadProfile(append=false) {
-  if (busy) return;
-  if (!append) reset();
-  if (!apiBase) {$('#library-status').textContent='Коллекция временно недоступна. Попробуйте позже.';return;}
-  if (!telegram?.initData) {$('#library-status').textContent='Откройте WAVE кнопкой приложения у @wave_audio_player_bot.';return;}
-  busy=true;render();$('#library-status').textContent='Собираем твою коллекцию…';
+function describeLibrary() {
+  const library=libraries[view];
+  $('#library-status').textContent=library.loaded
+    ? (view==='catalog' ? (Number.isInteger(library.total)?`Найдено ${library.total}. Показано ${library.tracks.length}.`:`Показано ${library.tracks.length} результатов Audius.`)
+      : `Загружено ${library.tracks.length} из ${library.total}. Поиск — по загруженным трекам.`)
+    : view==='catalog'?'Поиск треков и исполнителей в Audius.':'Собираем твою коллекцию…';
+}
+function switchView(target) {
+  if(target===view)return;
+  libraries[view].query=$('#search').value;
+  cancelRequests();view=target;viewError='';
+  const library=libraries[view];tracks=library.tracks;nextOffset=library.next;
+  $('#search').value=library.query;
+  $('#library-title').textContent=view==='catalog'?'Найти музыку':'Моя коллекция';
+  $('#search').placeholder=view==='catalog'?'Название трека или исполнитель':'Трек или исполнитель';
+  $('#search').setAttribute('aria-label',view==='catalog'?'Поиск музыки в Audius':'Поиск по загруженной музыке');
+  $('#search-submit').hidden=view!=='catalog';
+  $('#tab-profile').setAttribute('aria-selected',String(view==='profile'));
+  $('#tab-catalog').setAttribute('aria-selected',String(view==='catalog'));
+  $('#profile').setAttribute('aria-label',view==='catalog'?'Повторить поиск':'Обновить мою музыку');
+  $('#tracks').setAttribute('aria-label',view==='catalog'?'Результаты поиска Audius':'Музыка профиля');
+  describeLibrary();render();
+  if(view==='profile'&&!library.loaded)loadProfile();
+  else if(view==='catalog'&&library.query.trim()&&!library.loaded)loadSearch();
+}
+async function loadLibrary(source,append=false) {
+  if(source!==view)return;
+  const query=$('#search').value.trim();
+  if(source==='catalog'&&!query){viewError='';$('#library-status').textContent='Введи название трека или исполнителя.';render();return;}
+  cancelRequests();viewError='';
+  const version=requestVersion,controller=new AbortController();requestController=controller;
+  const library=libraries[source];
+  if(!append){library.tracks=[];library.next=null;library.loaded=false;library.query=source==='catalog'?query:$('#search').value;tracks=library.tracks;nextOffset=null;}
+  if(!apiBase||!telegram?.initData){viewError=!apiBase?'Сервис пока недоступен.':'Откройте WAVE кнопкой приложения у @wave_audio_player_bot.';$('#library-status').textContent=viewError;render();return;}
+  busy=true;render();$('#library-status').textContent=source==='catalog'?'Ищем музыку в Audius…':'Собираем твою коллекцию…';
+  const timer=setTimeout(()=>controller.abort(),30000);
   try {
-    const response=await fetch(`${apiBase}/api/profile-audios`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({init_data:telegram.initData,offset:append?nextOffset:0}),signal:AbortSignal.timeout(30000)});
+    const response=await fetch(`${apiBase}${source==='catalog'?'/api/search':'/api/profile-audios'}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({init_data:telegram.initData,offset:append?library.next:0,...(source==='catalog'?{query}:{})}),signal:controller.signal});
     const result=await response.json();
     if(!response.ok)throw new Error(result.error||'Не удалось загрузить музыку.');
-    if(!Array.isArray(result.tracks))throw new Error('Не удалось прочитать коллекцию.');
-    tracks.push(...result.tracks);nextOffset=result.next_offset;
-    $('#library-status').textContent=result.total_count?`Загружено ${tracks.length} из ${result.total_count}. Поиск — по загруженным трекам.`:'Добавь музыку в свой профиль Telegram и обнови коллекцию.';
-  }catch(error){$('#library-status').textContent=error instanceof TypeError||error.name==='TimeoutError'?'Сервис недоступен. Попробуйте ещё раз.':error.message;}
-  finally{
-    busy=false;render();
-    if(current<0)prepareTrack(tracks.findIndex(track=>track.playable));
+    if(!Array.isArray(result.tracks))throw new Error('Не удалось прочитать результаты.');
+    if(version!==requestVersion)return;
+    library.tracks.push(...result.tracks);library.next=result.next_offset;library.total=result.total_count;library.loaded=true;
+    tracks=library.tracks;nextOffset=library.next;describeLibrary();
+  }catch(error){
+    if(version!==requestVersion)return;
+    viewError=error.name==='AbortError'?'Сервис не успел ответить. Попробуйте ещё раз.':error instanceof TypeError?'Сервис недоступен. Попробуйте ещё раз.':error.message;
+    $('#library-status').textContent=viewError;
+  }finally{
+    clearTimeout(timer);
+    if(version===requestVersion){busy=false;render();if(current<0&&source==='profile')prepareTrack(tracks.findIndex(track=>track.playable),tracks);}
   }
 }
-$('#profile').onclick=()=>loadProfile();
+function loadProfile(append=false){return loadLibrary('profile',append);}
+function loadSearch(append=false){return loadLibrary('catalog',append);}
+$('#profile').onclick=()=>view==='catalog'?loadSearch():loadProfile();
+$('#tab-profile').onclick=()=>switchView('profile');
+$('#tab-catalog').onclick=()=>switchView('catalog');
+$('#search-form').onsubmit=event=>{event.preventDefault();if(view==='catalog')loadSearch();};
 $('#play-all').onclick=()=>{const first=tracks.findIndex(track=>track.playable);if(first>=0){select(first,true);openPlayer();}};
-$('#more').onclick=()=>loadProfile(true);
-$('#search').oninput=render;
+$('#more').onclick=()=>view==='catalog'?loadSearch(true):loadProfile(true);
+$('#search').oninput=()=>{
+  libraries[view].query=$('#search').value;
+  if(view==='profile'){render();return;}
+  cancelRequests();
+  if(!$('#search').value.trim()){libraries.catalog={tracks:[],next:null,query:'',total:0,loaded:false};tracks=[];nextOffset=null;viewError='';describeLibrary();render();return;}
+  libraries.catalog.tracks=[];libraries.catalog.next=null;libraries.catalog.loaded=false;tracks=[];nextOffset=null;viewError='';
+  $('#library-status').textContent='Ищем музыку в Audius…';render();
+  searchTimer=setTimeout(()=>loadSearch(),450);
+};
 $('#play').onclick=togglePlayback;
 $('#full-play').onclick=togglePlayback;
 $('#next').onclick=()=>next();
