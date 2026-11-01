@@ -154,10 +154,10 @@ export async function searchCatalogueAudius(env,{query,offset=0,count=20}={}){
   }
   return {items,total_count:null,next_offset:more?artists.length+rawOffset:null};
 }
-export async function genreAudius(env,genre,count=40){
+export async function genreAudius(env,genre,count=40,offset=0){
   if(typeof genre!=='string'||!genre.trim()||genre.length>100)throw new AudiusError(400,'Некорректный жанр.');
   // Official genre-filtered discovery, not a free-text query containing the genre.
-  return (await trackList(env,'/tracks/trending',{genre:genre.trim(),time:'week',limit:String(count)},count)).items;
+  return (await trackList(env,'/tracks/trending',{genre:genre.trim(),time:'week',limit:String(count),offset:String(offset)},count)).items;
 }
 export function registerAudiusTrack(user,track,env){
   const now=Date.now();for(const[id,r]of references)if(r.exp<=now)references.delete(id);

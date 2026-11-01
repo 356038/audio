@@ -1,6 +1,29 @@
 // UI translations only: track titles and artist names are never passed through this table.
 (() => {
   const english={
+  "Музыка":"Music",
+  "в твоём ритме.":"at your pace.",
+  "Знакомые исполнители и новые открытия. Подборка, которая звучит по-твоему.":"Familiar artists and fresh discoveries. A mix that feels like you.",
+  "Открыть подборку":"Open your mix",
+  "Любимые треки":"Favourite tracks",
+  "рядом.":"within reach.",
+  "Найди исполнителя или песню — и включай то, что хочется услышать.":"Find an artist or a song and play what you want to hear.",
+  "Твоя музыка.":"Your music.",
+  "Всегда с тобой.":"Always with you.",
+  "Сохраняй находки в свою коллекцию. Всё любимое — в одном месте.":"Save your discoveries. All your favourites in one place.",
+  "Из Telegram —":"From Telegram \u2014",
+  "на твою волну.":"to your playlist.",
+  "Открой музыку из своего профиля и слушай её в WAVE.":"Open the music from your profile and listen in WAVE.",
+  "Разделы WAVE":"Explore WAVE",
+  "карусель":"carousel",
+  "Приостановить карточки":"Pause cards",
+  "Продолжить карточки":"Resume cards",
+
+  "Новые рекомендации пока закончились.":"No more recommendations right now.",
+  "Ищем…":"Searching…",
+  "Пока нет треков.":"No tracks yet.",
+  "Пока нет рекомендаций.":"No recommendations yet.",
+  "В профиле пока нет музыки.":"No profile music yet.",
   "Профиль":"Profile",
   "Закрыть профиль":"Close profile",
   "Пользователь Telegram":"Telegram user",
@@ -189,7 +212,7 @@
       const source=node.nodeValue.trim();if(Object.hasOwn(english,source))node.nodeValue=node.nodeValue.replace(source,translate(language,source));
     }
     for(const element of document.querySelectorAll('[aria-label],[placeholder],[title]')){
-      for(const name of ['aria-label','placeholder','title']){
+      for(const name of ['aria-label','aria-roledescription','placeholder','title']){
         const source=element.getAttribute(name);if(Object.hasOwn(english,source))element.setAttribute(name,translate(language,source));
       }
     }

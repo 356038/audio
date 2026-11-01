@@ -166,8 +166,8 @@ async function route(request, env) {
       return Response.json({tracks:await Promise.all(items.map(item=>presentTrack(env,user.id,item,url.origin))),saved_ids:store.ids(user.id),total_count:total,next_offset:offset+items.length<total?offset+items.length:null});
     }
     if(url.pathname==='/api/recommendations'){
-      const result=await recommendations(env,user.id,store);
-      return Response.json({tracks:await Promise.all(result.items.map(item=>presentTrack(env,user.id,item,url.origin))),total_count:result.items.length,next_offset:null,reason:result.reason,personalized:result.personalized,history_count:result.history_count});
+      const result=await recommendations(env,user.id,store,{cursor:body.offset??null,refresh:body.refresh??false,previousFeed:body.previous_feed??null,exclude:body.exclude_ids??[]});
+      return Response.json({tracks:await Promise.all(result.items.map(item=>presentTrack(env,user.id,item,url.origin))),total_count:null,next_offset:result.next_cursor,feed_id:result.feed_id??null,reason:result.reason,personalized:result.personalized,history_count:result.history_count});
     }
     const item=await descriptorFromRequest(env,user.id,body.stream_url,url.origin);
     if(url.pathname==='/api/library/save'){

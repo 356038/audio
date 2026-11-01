@@ -155,3 +155,63 @@ test('account uses only authenticated Telegram identity and its own saved count'
   assert.equal((await(await api.fetch(request('/api/account',{},99),env)).json()).saved_count,0);
  }finally{store.close();}
 });
+
+test('recommendation feed continues beyond 20, excludes repeats and new saves/plays, and binds cursors to the user',async()=>{
+ const store=new PersonalStore(':memory:');let calls=0;
+ const data=Array.from({length:150},(_,i)=>song('P'+i,'Band '+Math.floor(i/3),'Electronic'));
+ const env={AUDIUS_API_KEY:'paged-feed-fixture',AUDIUS_BEARER_TOKEN:'fixture',AUDIUS_HTTP:async url=>{
+  calls++;const offset=Number(url.searchParams.get('offset')||0);return Response.json({data:data.slice(offset,offset+40)});
+ }};
+ try{
+  store.record(42,descriptor,'feed-history-1234567',20);store.save(42,{...descriptor,id:'audius:P1',track_id:'P1'},true);
+  const first=await recommendations(env,42,store);assert.equal(first.items.length,20);assert.ok(first.next_cursor);
+  await assert.rejects(recommendations(env,99,store,{cursor:first.next_cursor}),error=>error.status===401);
+  await assert.rejects(recommendations(env,42,store,{cursor:first.next_cursor.replace(/:1$/,':99')}),error=>error.status===400);
+  const [second,retry]=await Promise.all([recommendations(env,42,store,{cursor:first.next_cursor}),recommendations(env,42,store,{cursor:first.next_cursor})]);
+  assert.deepEqual(second,retry,'simultaneous retries must replay the same page');
+  store.record(42,{...descriptor,id:'audius:P70',track_id:'P70'},'feed-new-play-1234567',20);store.save(42,{...descriptor,id:'audius:P71',track_id:'P71'},true);
+  const tracks=[...first.items,...second.items];let cursor=second.next_cursor,pages=2;
+  while(cursor){const page=await recommendations(env,42,store,{cursor});tracks.push(...page.items);cursor=page.next_cursor;assert.ok(++pages<20);}
+  assert.equal(tracks.length,147);assert.equal(new Set(tracks.map(t=>t.id)).size,147);assert.ok(!tracks.some(t=>['audius:P1','audius:P70','audius:P71'].includes(t.id)));assert.ok(calls<20);
+ }finally{store.close();}
+});
+
+test('failed continuation can be retried without skipping or repeating a recommendation page',async()=>{
+ const store=new PersonalStore(':memory:');let fail=false;
+ const data=Array.from({length:80},(_,i)=>song('R'+i,'Band '+i,'Electronic'));
+ const env={AUDIUS_API_KEY:'retry-feed-fixture',AUDIUS_BEARER_TOKEN:'fixture',AUDIUS_HTTP:async url=>{
+  const offset=Number(url.searchParams.get('offset')||0);if(fail&&offset>=40)return new Response(null,{status:429});return Response.json({data:data.slice(offset,offset+40)});
+ }};
+ try{
+  store.record(42,descriptor,'feed-retry-123456789',20);
+  const first=await recommendations(env,42,store),second=await recommendations(env,42,store,{cursor:first.next_cursor});
+  fail=true;await assert.rejects(recommendations(env,42,store,{cursor:second.next_cursor}),error=>error.status===429);
+  fail=false;const third=await recommendations(env,42,store,{cursor:second.next_cursor});assert.equal(third.items.length,20);assert.equal(new Set([...first.items,...second.items,...third.items].map(t=>t.id)).size,60);
+ }finally{store.close();}
+});
+
+test('explicit refresh returns different similar tracks instead of replaying the cached selection',async()=>{
+ const store=new PersonalStore(':memory:');
+ const data=Array.from({length:100},(_,i)=>song('FRESH'+i,'Band '+i,'Electronic'));
+ const env={AUDIUS_API_KEY:'refresh-feed-fixture',AUDIUS_BEARER_TOKEN:'fixture',AUDIUS_HTTP:async url=>{const offset=Number(url.searchParams.get('offset')||0);return Response.json({data:data.slice(offset,offset+40)});}};
+ try{
+  store.record(42,descriptor,'refresh-history-12345',20);
+  const first=await recommendations(env,42,store),cached=await recommendations(env,42,store);assert.deepEqual(first.items,cached.items);
+  const second=await recommendations(env,42,store,{refresh:true,previousFeed:first.feed_id,exclude:first.items.map(t=>t.id)});
+  const third=await recommendations(env,42,store,{refresh:true,previousFeed:second.feed_id,exclude:second.items.map(t=>t.id)});
+  assert.equal(second.items.length,20);assert.equal(third.items.length,20);assert.equal(new Set([...first.items,...second.items,...third.items].map(t=>t.id)).size,60);
+  await assert.rejects(recommendations(env,99,store,{refresh:true,previousFeed:first.feed_id}),error=>error.status===403);
+ }finally{store.close();}
+});
+
+test('authenticated recommendation API exposes continuation and honors explicit refresh exclusions',async()=>{
+ const store=new PersonalStore(':memory:');const data=Array.from({length:100},(_,i)=>song('API'+i,'Artist '+i,'Electronic'));
+ const env={BOT_TOKEN:bot,PERSONAL_STORE:store,AUDIUS_API_KEY:'api-feed-fixture',AUDIUS_BEARER_TOKEN:'fixture',AUDIUS_HTTP:async url=>{const offset=Number(url.searchParams.get('offset')||0);return Response.json({data:data.slice(offset,offset+40)});}};
+ try{
+  store.record(42,descriptor,'api-feed-history-12345',20);
+  const first=await(await api.fetch(request('/api/recommendations'),env)).json();assert.equal(first.tracks.length,20);assert.equal(typeof first.next_offset,'string');assert.equal(first.total_count,null);
+  const fresh=await(await api.fetch(request('/api/recommendations',{refresh:true,previous_feed:first.feed_id,exclude_ids:first.tracks.map(t=>t.id)}),env)).json();assert.equal(fresh.tracks.length,20);assert.equal(new Set([...first.tracks,...fresh.tracks].map(t=>t.id)).size,40);
+  assert.equal((await api.fetch(request('/api/recommendations',{offset:first.next_offset},99),env)).status,401);
+  assert.ok(first.tracks[0].stream_url.startsWith(origin+'/api/stream?ticket='));assert.ok(!JSON.stringify(first).includes(env.AUDIUS_API_KEY));
+ }finally{store.close();}
+});

@@ -13,7 +13,7 @@ test('VPS server serves the app, configured endpoint, theme and protected API', 
   try {
     const page = await fetch(base+'/');
     assert.equal(page.status,200);
-    assert.match(await page.text(),/Музыка вашего профиля Telegram/);
+    assert.match(await page.text(),/Открыть подборку/);
     const config = await (await fetch(base+'/config.js')).text();
     assert.ok(config.includes('https://wave.example'));
     assert.ok(!config.includes('123:local-test'));
