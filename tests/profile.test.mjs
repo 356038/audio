@@ -83,6 +83,30 @@ test('tampered and expired stream tickets cannot retrieve files', async () => {
   const signature = createHmac('sha256',BOT_TOKEN).update(`wave-stream:${payload}`).digest('hex');
   assert.equal((await api.fetch(new Request(`${origin}/api/stream?ticket=${payload}.${signature}`),env)).status,401);
 });
+test('profile artwork is fetched privately and receives an image MIME type', async () => {
+  globalThis.fetch = async () => ok({total_count:1,audios:[{file_id:'song',file_unique_id:'song-id',thumbnail:{file_id:'cover',file_unique_id:'cover-id'}}]});
+  const result = await (await api.fetch(request({init_data:initData()}),env)).json();
+  const artwork = result.tracks[0].artwork_url;
+  assert.ok(artwork.startsWith(`${origin}/api/artwork?ticket=`));
+  globalThis.fetch = async (url, options) => {
+    if (url.endsWith('/getFile')) {
+      assert.deepEqual(JSON.parse(options.body),{file_id:'cover'});
+      return ok({file_path:'thumbnails/file_1.jpg',file_size:4});
+    }
+    return new Response(new Uint8Array([255,216,255,217]),{headers:{'Content-Type':'application/octet-stream'}});
+  };
+  const response = await api.fetch(new Request(artwork),env);
+  assert.equal(response.status,200);
+  assert.equal(response.headers.get('Content-Type'),'image/jpeg');
+  assert.equal((await response.arrayBuffer()).byteLength,4);
+});
+test('artwork and audio tickets cannot be interchanged', async () => {
+  globalThis.fetch = async () => ok({total_count:1,audios:[{file_id:'song',file_unique_id:'id',thumbnail:{file_id:'cover'}}]});
+  const {tracks} = await (await api.fetch(request({init_data:initData()}),env)).json();
+  globalThis.fetch = () => {throw new Error('must not call Telegram');};
+  assert.equal((await api.fetch(new Request(tracks[0].artwork_url.replace('/api/artwork','/api/stream')),env)).status,401);
+  assert.equal((await api.fetch(new Request(tracks[0].stream_url.replace('/api/stream','/api/artwork')),env)).status,401);
+});
 test('Telegram failure is sanitised, CORS is restricted, missing config is explicit', async () => {
   globalThis.fetch = async () => Response.json({ok:false,error_code:400,description:`private ${BOT_TOKEN}`},{status:400});
   const response = await api.fetch(request({init_data:initData()}),env);

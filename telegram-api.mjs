@@ -60,8 +60,8 @@ async function telegram(env, method, body) {
   return data.result;
 }
 
-async function ticketFor(env, userId, audio) {
-  const payload = base64(JSON.stringify({user: userId, file: audio.file_id, exp: now()+7200}));
+async function ticketFor(env, userId, audio, type = 'audio') {
+  const payload = base64(JSON.stringify({user: userId, file: audio.file_id, type, exp: now()+7200}));
   return `${payload}.${hex(await sign(env.BOT_TOKEN, `wave-stream:${payload}`))}`;
 }
 async function readTicket(env, value) {
@@ -97,16 +97,20 @@ async function route(request, env) {
       id: audio.file_unique_id, title: audio.title || audio.file_name || 'Без названия',
       performer: audio.performer || '', duration: audio.duration || 0,
       playable: !audio.file_size || audio.file_size <= MAX_FILE,
+      artwork_url: audio.thumbnail?.file_id
+        ? `${url.origin}/api/artwork?ticket=${encodeURIComponent(await ticketFor(env, user.id, audio.thumbnail, 'artwork'))}` : null,
       stream_url: !audio.file_size || audio.file_size <= MAX_FILE
         ? `${url.origin}/api/stream?ticket=${encodeURIComponent(await ticketFor(env, user.id, audio))}` : null,
     })));
     return Response.json({tracks, total_count: result.total_count,
       next_offset: tracks.length && offset+tracks.length < result.total_count ? offset+tracks.length : null});
   }
-  if (url.pathname === '/api/stream' && request.method === 'GET') {
+  if (['/api/stream', '/api/artwork'].includes(url.pathname) && request.method === 'GET') {
+    const artwork = url.pathname === '/api/artwork';
     const ticket = await readTicket(env, url.searchParams.get('ticket'));
+    if ((ticket.type || 'audio') !== (artwork ? 'artwork' : 'audio')) throw new ApiError(401, 'Ссылка не подходит для этого файла.');
     const file = await telegram(env, 'getFile', {file_id: ticket.file});
-    if (file.file_size > MAX_FILE) throw new ApiError(413, 'Файл превышает лимит Telegram Bot API.');
+    if (file.file_size > (artwork ? 1024 * 1024 : MAX_FILE)) throw new ApiError(413, 'Файл превышает лимит загрузки.');
     if (typeof file.file_path !== 'string' || !/^[a-zA-Z0-9_./-]+$/.test(file.file_path) || file.file_path.includes('..') || file.file_path.startsWith('/')) {
       throw new ApiError(502, 'Telegram не предоставил путь аудиофайла.');
     }
@@ -124,7 +128,7 @@ async function route(request, env) {
     for (const name of ['Content-Type', 'Content-Length', 'Content-Range', 'Accept-Ranges']) {
       if (upstream.headers.has(name)) out.set(name, upstream.headers.get(name));
     }
-    out.set('Content-Type', upstream.headers.get('Content-Type') || 'application/octet-stream');
+    out.set('Content-Type', artwork ? 'image/jpeg' : upstream.headers.get('Content-Type') || 'application/octet-stream');
     return new Response(upstream.body, {status: upstream.status, headers: out});
   }
   throw new ApiError(404, 'Не найдено.');

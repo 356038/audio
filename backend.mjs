@@ -13,8 +13,7 @@ export function createServer(env = process.env) {
     ['/', ['index.html', 'text/html; charset=utf-8']],
     ['/index.html', ['index.html', 'text/html; charset=utf-8']],
     ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
-    ['/audio/0.wav', ['audio/0.wav', 'audio/wav']],
-    ['/audio/1.wav', ['audio/1.wav', 'audio/wav']],
+    ['/theme.css', ['theme.css', 'text/css; charset=utf-8']],
   ]);
   return http.createServer(async (req, res) => {
     try {
@@ -22,7 +21,8 @@ export function createServer(env = process.env) {
       if (url.origin !== publicOrigin) {res.writeHead(400); res.end(); return;}
       if (req.method === 'GET' && url.pathname === '/config.js') {
         res.writeHead(200, {'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store'});
-        res.end(`window.WAVE_API_BASE = ${JSON.stringify(publicOrigin)};`); return;
+        const theme = env.WAVE_THEME === 'default' ? 'default' : 'halloween';
+        res.end(`window.WAVE_API_BASE = ${JSON.stringify(publicOrigin)};window.WAVE_THEME = ${JSON.stringify(theme)};`); return;
       }
       if (req.method === 'GET' && staticFiles.has(url.pathname)) {
         const [name, type] = staticFiles.get(url.pathname);

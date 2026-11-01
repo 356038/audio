@@ -18,7 +18,7 @@ restart unrelated services. Keep this app in its own directory and service.
 4. Add a dedicated reverse-proxy site. `Caddyfile.example` shows one possible
    configuration; use the VPS's existing proxy and validate its configuration
    before reloading. Do not install a competing proxy on occupied ports.
-5. Verify `/health`, HTML, JS, demo playback and an authenticated profile request.
+5. Verify `/health`, HTML, JS, playback and an authenticated profile request.
 6. Set this HTTPS site as the menu-button URL in BotFather. Open the app from the
    bot, verify your real profile list, play a track, then test a locked screen.
 
@@ -31,6 +31,11 @@ Do not expose the Telegram token in Pages, query strings, git, screenshots or
 logs. Signed playback URLs are temporary bearer links; anyone holding one can
 play its file until it expires (two hours). They are not the bot token. Do not
 publish these links or index users' libraries for others.
+
+## Themes
+
+Set `WAVE_THEME=default` for the base appearance or `WAVE_THEME=halloween` for
+the seasonal appearance, then restart only WAVE. Halloween is the default.
 
 ## Validation
 
