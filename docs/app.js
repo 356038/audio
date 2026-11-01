@@ -20,11 +20,39 @@ let warmController = null;
 const prepared = new Set();
 telegram?.ready();
 telegram?.expand();
-try {
-  telegram?.setHeaderColor('#111110');
-  telegram?.setBackgroundColor('#111110');
-  telegram?.setBottomBarColor?.('#111110');
-} catch { /* Theme controls are optional on older Telegram clients. */ }
+// Disable Telegram's sheet drag from content, while retaining its native header gesture.
+if(telegram?.disableVerticalSwipes&&(!telegram.isVersionAtLeast||telegram.isVersionAtLeast('7.7'))){
+  try{telegram.disableVerticalSwipes();}catch{/* Unsupported clients retain their native gesture. */}
+}
+function applyTelegramAppearance(){
+  const background=getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+  $('meta[name=theme-color]').content=background;
+  for(const method of ['setHeaderColor','setBackgroundColor','setBottomBarColor']){
+    try{telegram?.[method]?.(background);}catch{/* Optional on older clients. */}
+  }
+}
+applyTelegramAppearance();
+telegram?.onEvent?.('themeChanged',applyTelegramAppearance);
+const fullscreenSupported=typeof telegram?.requestFullscreen==='function'&&(!telegram.isVersionAtLeast||telegram.isVersionAtLeast('8.0'));
+function syncTelegramLayout(){
+  document.documentElement.classList.toggle('is-fullscreen',Boolean(telegram?.isFullscreen));
+  $('#fullscreen').hidden=!fullscreenSupported||Boolean(telegram?.isFullscreen);
+  for(const [name,insets]of [['safe',telegram?.safeAreaInset],['content-safe',telegram?.contentSafeAreaInset]]){
+    for(const edge of ['top','bottom','left','right']){
+      const value=insets?.[edge];
+      if(Number.isFinite(value)&&value>=0)document.documentElement.style.setProperty(`--tg-${name}-area-inset-${edge}`,`${value}px`);
+    }
+  }
+  scheduleSearchLayout();
+}
+function requestAppFullscreen(manual=false){
+  if(!fullscreenSupported||telegram.isFullscreen)return;
+  try{telegram.requestFullscreen();}
+  catch{if(manual)toast('Telegram не включил полный экран. Попробуйте обновить приложение Telegram.');}
+}
+$('#fullscreen').onclick=()=>requestAppFullscreen(true);
+for(const event of ['fullscreenChanged','safeAreaChanged','contentSafeAreaChanged'])telegram?.onEvent?.(event,syncTelegramLayout);
+telegram?.onEvent?.('fullscreenFailed',()=>{$('#fullscreen').hidden=!fullscreenSupported;});
 if (halloween) {
   $('#hero-title').replaceChildren(document.createTextNode('Звучит'), document.createElement('br'));
   const accent = document.createElement('span'); accent.textContent = 'до мурашек.'; $('#hero-title').append(accent);
@@ -220,6 +248,7 @@ function previous() {
 }
 function openPlayer() {
   if (current < 0 || $('#now-playing-dialog').open) return;
+  $('#search').blur();
   $('#now-playing-dialog').showModal(); document.body.classList.add('player-open');
   if (!$('#full-artwork').querySelector('img')) addArtwork($('#full-artwork'), selectedTrack());
   telegram?.BackButton?.show();
@@ -391,5 +420,35 @@ document.addEventListener('touchmove',e=>{if(e.touches.length>1)e.preventDefault
 document.addEventListener('dblclick',e=>{if(!e.target.closest('input,textarea'))e.preventDefault();});
 document.addEventListener('pointerdown',event=>{
   const active=document.activeElement;
+  // Keep controls under the finger and keep the keyboard open during playback actions.
+  if(active===$('#search')&&event.target.closest('.player-dock')){
+    event.preventDefault();return;
+  }
   if(active?.matches('input[type=search],input[type=text],textarea')&&!event.target.closest('input,textarea,label,.search-form'))active.blur();
 },{capture:true});
+
+// A keyboard may resize or pan the visible viewport independently of the page.
+// Move the same player, without replacing the audio element or its source.
+let searchLayoutFrame=0;
+function scheduleSearchLayout(){
+  if(searchLayoutFrame)return;
+  searchLayoutFrame=requestAnimationFrame(()=>{
+    searchLayoutFrame=0;
+    const focused=document.activeElement===$('#search');
+    document.documentElement.classList.toggle('search-focused',focused);
+    if(!focused){document.documentElement.style.removeProperty('--search-dock-top');return;}
+    const viewport=window.visualViewport,top=viewport?.offsetTop||0;
+    document.documentElement.style.setProperty('--search-dock-top',`${top}px`);
+    const field=$('#search').getBoundingClientRect();
+    const visibleTop=$('.player-dock').getBoundingClientRect().bottom+12;
+    const visibleBottom=top+(viewport?.height||window.innerHeight)-16;
+    if(field.top<visibleTop)window.scrollBy(0,field.top-visibleTop);
+    else if(field.bottom>visibleBottom)window.scrollBy(0,field.bottom-visibleBottom);
+  });
+}
+for(const event of ['focus','blur'])$('#search').addEventListener(event,scheduleSearchLayout);
+window.addEventListener('resize',scheduleSearchLayout);
+window.visualViewport?.addEventListener('resize',scheduleSearchLayout);
+window.visualViewport?.addEventListener('scroll',scheduleSearchLayout);
+syncTelegramLayout();
+requestAppFullscreen();

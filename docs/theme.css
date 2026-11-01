@@ -80,3 +80,23 @@ html,body{touch-action:pan-x pan-y;-webkit-text-size-adjust:100%;overscroll-beha
 #full-save{width:44px;height:44px;border:0}
 .toast{position:fixed;left:50%;bottom:calc(125px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:100;background:#eee7de;color:#241b14;box-shadow:0 10px 40px #0005;border-radius:14px;padding:12px 18px;max-width:calc(100vw - 32px);font-size:12px;text-align:center}
 @media(max-width:700px){.track{padding-right:96px}.row-play{right:47px;width:44px;height:44px}.row-save{right:3px;width:44px;height:44px}.source-tabs{width:100%;gap:2px;padding:4px}.source-tabs button{padding:10px 13px;font-size:11px}.search-form input[type=search]{padding-left:40px;font-size:16px}}
+
+/* Keep transport available above search while the software keyboard is open. */
+.search-focused .player-dock{top:calc(var(--search-dock-top,0px) + var(--wave-top-inset,0px) + 8px);bottom:auto;left:8px;right:8px;border:1px solid var(--line);border-radius:16px;padding:8px 0;box-shadow:0 8px 28px #0005}
+.search-focused .player-dock .player-inner{padding:0 10px;gap:8px;grid-template-columns:minmax(0,1fr) auto}
+.search-focused .player-dock .audio-wrap{display:none}
+.search-focused .player-dock .now-art{width:34px;height:34px;border-radius:8px}
+.search-focused .player-dock .now-playing{gap:9px}
+.search-focused .player-dock .now-meta h2{max-width:none;font-size:12px;margin-bottom:4px}
+.search-focused .player-dock .now-meta small{font-size:9px}
+.search-focused .player-dock .dock-equalizer,.search-focused .player-dock .repeat-label{display:none}
+.search-focused .player-dock .transport{gap:6px}
+.search-focused .player-dock .transport .playback-button,.search-focused .player-dock .transport .icon-button{width:36px;min-width:36px;height:36px}
+
+/* Fullscreen Telegram controls and system cutouts have separate safe areas. */
+:root{--wave-top-inset:calc(max(env(safe-area-inset-top,0px),var(--tg-safe-area-inset-top,0px)) + var(--tg-content-safe-area-inset-top,0px));--wave-bottom-inset:calc(max(env(safe-area-inset-bottom,0px),var(--tg-safe-area-inset-bottom,0px)) + var(--tg-content-safe-area-inset-bottom,0px))}
+.is-fullscreen body{padding-top:var(--wave-top-inset)}
+.is-fullscreen .shell{padding-left:max(20px,var(--tg-safe-area-inset-left,0px),var(--tg-content-safe-area-inset-left,0px));padding-right:max(20px,var(--tg-safe-area-inset-right,0px),var(--tg-content-safe-area-inset-right,0px))}
+.is-fullscreen:not(.search-focused) .player-dock{padding-bottom:max(12px,var(--wave-bottom-inset))}
+.is-fullscreen .full-player{padding-top:calc(18px + var(--wave-top-inset));padding-bottom:calc(24px + var(--wave-bottom-inset))}
+@media(max-width:700px){.header-end{gap:12px}.header-end:has(#fullscreen:not([hidden])) .topnote{display:none}}
