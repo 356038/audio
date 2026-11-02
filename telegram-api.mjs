@@ -1,6 +1,7 @@
 // Telegram API service. BOT_TOKEN is a server secret, never a browser setting.
 import {AudiusError,registerAudiusTrack,serveAudiusMedia,describeAudiusTrack} from './audius.mjs';
 import {searchCatalogueAudius} from './catalogue-search.mjs';
+import {trackVersions} from './track-versions.mjs';
 import {recommendations} from './recommendations.mjs';
 const encoder = new TextEncoder();
 const MAX_FILE = 20 * 1024 * 1024;
@@ -137,7 +138,7 @@ async function presentTrack(env,user,item,origin){
   const saved=Boolean(env.PERSONAL_STORE?.has(user,item.id));
   if(item.source==='audius'||item.track_id){
     const reference=registerAudiusTrack(user,item,env),audio={file_id:reference,mime_type:item.mime};
-    return {id:item.id,source:'audius',title:item.title,performer:item.performer,duration:item.duration,saved,
+    return {id:item.id,source:'audius',title:item.title,performer:item.performer,duration:item.duration,saved,version_labels:trackVersions(item),
       playable:item.playable,unavailable_reason:item.unavailable_reason,
       stream_url:item.playable?`${origin}/api/stream?ticket=${encodeURIComponent(await ticketFor(env,user,audio,'audio','audius'))}`:null,
       artwork_url:item.artwork_url?`${origin}/api/artwork?ticket=${encodeURIComponent(await ticketFor(env,user,audio,'artwork','audius'))}`:null};

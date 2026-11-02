@@ -6,7 +6,7 @@ import {searchAudius,genreAudius,audiusFetch,isPublicAddress} from '../audius.mj
 import {searchCatalogueAudius,clearArtistSearchCache} from '../catalogue-search.mjs';
 const base='https://wave.example',bot='123:bot-test-only';
 const basic={BOT_TOKEN:bot,AUDIUS_API_KEY:'public-fixture',AUDIUS_BEARER_TOKEN:'bearer-fixture'};
-const song={id:'Ab12',title:'Fixture track',duration:42,user:{name:'Fixture artist'},is_streamable:true,is_stream_gated:false};
+const song={id:'Ab12',title:'Fixture track',genre:'Electronic',duration:42,user:{name:'Fixture artist'},is_streamable:true,is_stream_gated:false};
 function signed(user=42){const data=new URLSearchParams({auth_date:String(Math.floor(Date.now()/1000)),user:JSON.stringify({id:user})});const value=[...data.entries()].sort().map(([k,v])=>`${k}=${v}`).join('\n');const key=createHmac('sha256','WebAppData').update(bot).digest();data.set('hash',createHmac('sha256',key).update(value).digest('hex'));return data.toString();}
 const query=(body={})=>new Request(base+'/api/search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({init_data:signed(),query:'electronic',...body})});
 const ok=items=>Response.json({data:items});
@@ -181,9 +181,9 @@ test('search refresh fetches again while existing page sessions remain usable',a
   if(url.pathname==='/v1/search/full')return Response.json({data:{tracks:[],users:[]}});
   return ok(Array.from({length:40},(_,i)=>({...song,id:'A'+i,title:'Song '+i+' generation '+generation})));
  }};
- const first=await searchCatalogueAudius(env,{query:'q'});generation=1;
- const refreshed=await searchCatalogueAudius(env,{query:'q',refresh:true});assert.notEqual(first.search_session,refreshed.search_session);assert.ok(refreshed.items[0].title.includes('generation 1'));
- const oldNext=await searchCatalogueAudius(env,{query:'q',offset:20,session:first.search_session});assert.ok(oldNext.items[0].title.includes('generation 0'));
+ const first=await searchCatalogueAudius(env,{query:'song'});generation=1;
+ const refreshed=await searchCatalogueAudius(env,{query:'song',refresh:true});assert.notEqual(first.search_session,refreshed.search_session);assert.ok(refreshed.items[0].title.includes('generation 1'));
+ const oldNext=await searchCatalogueAudius(env,{query:'song',offset:20,session:first.search_session});assert.ok(oldNext.items[0].title.includes('generation 0'));
 });
 
 test('a healthy empty user lookup cannot hide rate limits from both music indices',async()=>{

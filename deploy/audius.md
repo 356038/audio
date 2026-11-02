@@ -77,3 +77,14 @@ code, never provider response bodies. Only transient 502/503/504 responses recei
 one retry; auth failures and rate limits do not. Responses are capped at 2 MiB
 while reading, with cancellation on overflow. Live Queen/Король и Шут coverage
 still requires this VPS probe; controlled tests do not establish catalogue coverage.
+
+Local evidence is required even for global-index hits, so a fuzzy `КиШ` result
+does not admit `Кишлак`. A filename artist prefix must match the full normalized
+name; incidental Queen words in a title do not get artist-prefix priority.
+Empty filtered pages retain a continuation instead of silently terminating.
+
+Explicit version markers are returned as fixed `version_labels` codes and shown
+in the list and full player in RU/EN. Classification uses title wording and
+structured cover fields, never infers an original, and does not alter uploader
+names or cover/remix titles. AI versions and demos rank lower within the same
+match tier. A requested remix is checked separately from the artist name.

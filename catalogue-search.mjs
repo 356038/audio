@@ -1,4 +1,5 @@
 import {AudiusError,searchAudius,searchFullAudius,searchAudiusUsers,artistCatalogueAudius} from './audius.mjs';
+import {trackVersions} from './track-versions.mjs';
 
 const cache=new Map(),sessions=new Map();
 const PAGE=40,MAX_RESULTS=1000,TTL=10*60000;
@@ -35,23 +36,43 @@ function fraction(text,query){
   if(!words.length)return 0;
   return words.filter(word=>available.some(value=>value===word||word.length>=5&&distance(value,word)<=1)).length/words.length;
 }
+function exactName(name,query){return normalizeSearch(name).replaceAll(' ','')===normalizeSearch(query).replaceAll(' ','');}
+function titleArtist(track,variants){
+  // Filename separators become spaces, while intraname hyphens (Jay-Z) stay.
+  const value=track.title.replaceAll('_',' ');
+  const parts=value.split(/\s+[—–-]\s+/);
+  if(parts.length<2)return false;
+  const names=track.artist_names||[track.performer];
+  // "Song title — uploader" must not be interpreted as "artist — song".
+  if(names.some(name=>name&&exactName(parts.at(-1),name)))return false;
+  return variants.some(variant=>exactName(parts[0],variant));
+}
 function score(entry,state){
   const {track}=entry;let artist=0,title=0,combined=0;
-  for(const [i,variant]of (state.artistQuery?searchVariants(state.artistQuery):state.variants).entries()){
+  const variants=state.artistQuery?searchVariants(state.artistQuery):state.matchVariants;
+  for(const [i,variant]of variants.entries()){
     const weight=i===0?1:.85;
     artist=Math.max(artist,weight*Math.max(...(track.artist_names||[track.performer]).map(name=>nameMatch(name,variant)),nameMatch(track.artist_handle,variant)));
     title=Math.max(title,weight*fraction(track.title,variant));combined=Math.max(combined,weight*fraction(`${track.performer} ${track.title}`,variant));
   }
   if(state.titleQuery&&fraction(track.title,state.titleQuery)<.75)return -1;
   if(!entry.global&&artist===0&&combined<.85)return -1;
+  const embeddedArtist=titleArtist(track,variants)||variants.some(variant=>track.cover_original_artist&&exactName(track.cover_original_artist,variant));
+  const semantic=Math.max(...variants.map(variant=>fraction([track.genre,...(track.tags||[])].join(' '),variant)));
+  // A fuzzy provider hit alone is insufficient: aliases must also match local
+  // whole tokens. In particular, КиШ does not provide evidence for Кишлак.
+  if(artist===0&&!embeddedArtist&&Math.max(title,combined,semantic)<.5)return -1;
+  const versions=trackVersions(track);
+  if(state.requestedVersions.some(version=>!versions.includes(version)))return -1;
   // A matching uploader name is evidence of a name match, not artist identity.
   // Do not let generic uploads such as "1sound" dominate an artist query.
   const generic=/^(?:\d+[\s._-]*)?(?:sound(?:s|ess)?|audio|track|test|untitled|recording|voice)(?:[\s._-]*\d+)?$/i.test(track.title.trim());
-  const prefix=track.title.replaceAll('_',' ').match(/^(.{1,100}?)\s*[-–—]\s*\S/);
-  const embeddedArtist=prefix?Math.max(...state.variants.map(variant=>nameMatch(prefix[1],variant))):0;
   const popularity=Math.min(12,Math.log10(1+(track.play_count||0))*2);
-  const relevance=artist*30*(track.verified?1:.6)+title*18+(title===1?5:0)+combined*12+(track.verified?3:0)+embeddedArtist*16+popularity-(generic&&title<1?100:0);
-  return (track.playable?1000:0)+Math.max(0,relevance);
+  const versionPenalty=versions.reduce((penalty,version)=>penalty+(state.requestedVersions.includes(version)?0:version==='ai'?60:version==='demo'?12:6),0);
+  const genericUpload=generic&&title<1;
+  const tier=genericUpload?0:artist>=3.4?3:embeddedArtist?2:artist>0?1:0;
+  const relevance=artist*30*(track.verified?1:.6)+title*18+(title===1?5:0)+combined*12+(track.verified&&artist>0?3:0)+popularity;
+  return (track.playable?10000:0)+tier*200+(genericUpload?0:Math.max(0,relevance-versionPenalty));
 }
 function addSource(state,kind,query,id=null){
   if(state.sources.some(source=>source.kind===kind&&source.query===query&&source.id===id))return;
@@ -60,7 +81,7 @@ function addSource(state,kind,query,id=null){
 function artistHints(state){
   const explicit=state.query.split(/\s+[—–-]\s+/);if(explicit.length>1){state.artistQuery=explicit[0];state.titleQuery=explicit.slice(1).join(' ');return [explicit[0],...state.variants];}
   const words=state.query.trim().split(/\s+/);
-  return words.length>=3&&!/\s(?:и|and|i)\s/i.test(state.query)?[...state.variants,words[0]]:state.variants;
+  return words.length>=3&&!/\s(?:и|and|i)\s/i.test(state.query)?[...state.matchVariants,words[0]]:state.matchVariants;
 }
 function collectArtists(state,users){
   for(const user of users){
@@ -171,11 +192,16 @@ export async function searchCatalogueAudius(env,{query,offset=0,count=20,session
   if(!state){
     while(sessions.size>=64)removeState(sessions.values().next().value);
     state={key,id:crypto.randomUUID(),query,variants:searchVariants(query),artists:new Map(),sources:[],lookupErrors:[],candidates:new Map(),items:[],seen:new Set(),successes:0,sequence:0,rows:{},expires:Date.now()+TTL,initialized:false,pending:null};
+    state.requestedVersions=trackVersions({title:query});
+    const baseQuery=state.requestedVersions.length?query.replace(/(?<![\p{L}\p{N}])(?:ai[ -]generated|sped[ -]up|slowed(?:[ -]down)?|remix|mashup|cover|demo|live|ремикс|мэшап|кавер|демо|ускоренная|замедленная|ии|ai)(?![\p{L}\p{N}])/giu,' ').replace(/[()[\]]/g,' ').replace(/\s+/g,' ').trim():'';
+    // Match the artist/content independently from the requested version: the
+    // word "remix" alone is not evidence for Queen in a "Queen remix" query.
+    state.matchVariants=baseQuery?searchVariants(baseQuery):state.variants;
     state.hints=artistHints(state);cache.set(key,state);sessions.set(state.id,state);
   }
   try{await ensureResults(env,state,offset+count);}catch(error){removeState(state);throw error;}
   state.expires=Date.now()+(state.items.length?TTL:15000);
   const items=state.items.slice(offset,offset+count),hasMore=offset+items.length<state.items.length||state.items.length<MAX_RESULTS&&state.sources.some(source=>!source.done);
   const sources=state.sources.map(source=>({kind:source.kind,query:source.query,rows:source.offset,retries:source.retries,error:source.error}));
-  return {items,total_count:null,next_offset:items.length&&hasMore?offset+items.length:null,search_session:state.id,diagnostics:{variants:state.variants,rows:state.rows,artists:state.artists.size,candidates:state.items.length,partial:sources.some(source=>source.error)||state.lookupErrors.length>0,sources,user_errors:state.lookupErrors}};
+  return {items,total_count:null,next_offset:hasMore?offset+items.length:null,search_session:state.id,diagnostics:{variants:state.variants,rows:state.rows,artists:state.artists.size,candidates:state.items.length,partial:sources.some(source=>source.error)||state.lookupErrors.length>0,sources,user_errors:state.lookupErrors}};
 }

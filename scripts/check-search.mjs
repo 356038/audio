@@ -1,6 +1,7 @@
 // Read-only VPS diagnostic. Use: node --env-file=/etc/wave.env scripts/check-search.mjs
 import {searchAudius} from '../audius.mjs';
 import {searchCatalogueAudius} from '../catalogue-search.mjs';
+import {trackVersions} from '../track-versions.mjs';
 
 const queries=process.argv.slice(2).length?process.argv.slice(2):['король и шут','queen'];
 const secrets=['BOT_TOKEN','AUDIUS_API_KEY','AUDIUS_BEARER_TOKEN'].map(name=>process.env[name]).filter(value=>typeof value==='string'&&value.length>3);
@@ -22,8 +23,8 @@ else for(const query of queries.slice(0,5)){
     for(const source of result.diagnostics.sources)if(source.error||source.retries)console.log('Диагностика источника:',JSON.stringify({source:source.kind,query:safe(source.query),rows:source.rows,retries:source.retries,error:source.error}));
     for(const error of result.diagnostics.user_errors)console.log('Диагностика поиска профилей:',JSON.stringify({...error,query:safe(error.query)}));
     console.log('Время:',Math.round(performance.now()-start),'мс');
-    for(const track of result.items.slice(0,10))console.log(JSON.stringify({artist:safe(track.performer),title:safe(track.title),playable:track.playable,duration:track.duration,plays:track.play_count,profile_id:safe(track.artist_id),profile_verified:track.verified}));
+    for(const track of result.items.slice(0,10))console.log(JSON.stringify({artist:safe(track.performer),title:safe(track.title),versions:trackVersions(track),playable:track.playable,duration:track.duration,plays:track.play_count,profile_id:safe(track.artist_id),profile_verified:track.verified}));
     console.log('Имя и отметка профиля Audius не подтверждают принадлежность записи известной группе.');
-    if(!result.items.length)console.log('В ответивших индексах Audius нет результатов. Улучшение поиска не добавляет отсутствующие записи в каталог.');
+    if(!result.items.length)console.log(result.next_offset!==null?'Эта порция отфильтрована. В источниках остались непрочитанные страницы; поиск можно продолжить.':'В прочитанных ответах Audius не найдено подходящих записей. Это не подтверждает отсутствие записей во всём каталоге.');
   }catch(error){console.log('Проверка поиска не завершена:',safe(error.message));process.exitCode=1;}
 }

@@ -1,6 +1,15 @@
 // UI translations only: track titles and artist names are never passed through this table.
 (() => {
   const english={
+  "AI-версия":"AI version",
+  "Кавер":"Cover",
+  "Ремикс":"Remix",
+  "Мэшап":"Mashup",
+  "Демо":"Demo",
+  "Концертная версия":"Live",
+  "Ускоренная версия":"Sped up",
+  "Замедленная версия":"Slowed",
+  "Поиск ещё не завершён. Нажмите «Загрузить ещё».":"Search is not finished. Tap Load more.",
   "В каталоге Audius ничего не найдено.":"No results found in the Audius catalogue.",
   "Авто":"Auto",
   "Аватар недоступен.":"Avatar unavailable.",
