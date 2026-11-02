@@ -11,7 +11,7 @@ export function readTrackRows(query,doc=document){
       if(element.tagName==='IFRAME')try{const url=new URL(element.src,doc.location?.href);if(url.origin===doc.location?.origin&&/^\/(audio|music)/.test(url.pathname)&&element.contentDocument)roots.push(element.contentDocument);}catch{}
     }
   }
-  const selector='.audio_row, .audio_item, [data-audio], [class*="AudioRow" i], [class*="AudioItem" i], [class*="TrackRow" i], [class*="MusicTrack" i], [data-testid*="audio-row" i], [data-testid*="audio_row" i], [data-testid*="audio-track" i], [data-testid*="track-row" i]';
+  const selector='.audio_row, .audio_item, [data-audio], [class*="AudioRow" i], [class*="AudioItem" i], [class*="TrackRow" i], [class*="MusicTrack" i], [data-testid*="AudioRow" i], [data-testid*="AudioItem" i], [data-testid*="TrackRow" i], [data-testid*="MusicTrack" i], [data-testid*="audio-row" i], [data-testid*="audio_row" i], [data-testid*="audio-track" i], [data-testid*="track-row" i]';
   const nodes=[];for(const root of roots){for(const node of root.querySelectorAll(selector)){nodes.push(node);if(nodes.length===300)break;}if(nodes.length===300)break;}
   const tracks=[];let parsed=0,blank=0;const seen=new Set();
   for(const node of nodes){
@@ -76,9 +76,32 @@ export function inspectMusicLayout(doc=document){
    }
   }
   samples.sort((a,b)=>Number(a.sample==='queen')-Number(b.sample==='queen'));
+  const testids=new Set(),tags=new Set();
+  for(const root of roots){
+    for(const element of root.querySelectorAll('[data-testid]')){
+      const value=element.getAttribute('data-testid');
+      if(value&&/^[A-Za-z][A-Za-z0-9:_-]{0,79}$/.test(value)&&/audio|track|music/i.test(value)&&testids.size<40)testids.add(value);
+    }
+    for(const element of root.querySelectorAll('*')){
+      const tag=String(element.tagName||'').toLowerCase();
+      if(/^[a-z][a-z0-9-]{0,59}$/.test(tag)&&tag.includes('-')&&/audio|track|music/.test(tag)&&tags.size<20)tags.add(tag);
+    }
+  }
+  const frames=[];
+  for(const frame of [...doc.querySelectorAll('iframe')].slice(0,8)){
+    const item={host:'other',path_kind:'other',readable_document:false};
+    try{const url=new URL(frame.src,doc.location.href);
+      if(['vk.ru','vk.com','music.vk.ru','music.vk.com','m.vk.ru','m.vk.com','login.vk.ru','login.vk.com','id.vk.ru','id.vk.com'].includes(url.hostname))item.host=url.hostname;
+      item.same_origin=url.origin===doc.location.origin;
+      item.path_kind=/^\/(audio|music)/.test(url.pathname)?'music':url.pathname==='/q_frame.html'?'notifications':url.protocol==='about:'?'blank':'other';
+    }catch{}
+    try{item.readable_document=Boolean(frame.contentDocument);}catch{}
+    frames.push(item);
+  }
   return {ready_state:['loading','interactive','complete'].includes(doc.readyState)?doc.readyState:'unknown',
     inspected_roots:roots.length,
     iframe_count:doc.querySelectorAll('iframe').length,
+    frames,music_testids:[...testids],music_custom_tags:[...tags],
     legacy_row_count:doc.querySelectorAll('.audio_row, .audio_item, [data-audio]').length,
     samples:samples.slice(0,6)};
 }

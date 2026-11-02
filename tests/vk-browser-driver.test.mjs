@@ -7,7 +7,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import http from 'node:http';
 import vm from 'node:vm';
-import {PipeRpc,chromeArgs,isMusicPage,observation,requestObservation,readTrackRows,pageSearch,probeInput,createControl} from '../scripts/vk-browser-driver.mjs';
+import {PipeRpc,chromeArgs,isMusicPage,observation,requestObservation,readTrackRows,inspectMusicLayout,pageSearch,probeInput,createControl} from '../scripts/vk-browser-driver.mjs';
 
 test('Chrome uses private inherited pipes, preserves sandbox and restricts the origin',()=>{
  const args=chromeArgs('/private/profile');
@@ -68,6 +68,18 @@ test('native request discovery exports field names and fixed action names withou
  assert.equal(requestObservation({request:{url:'https://login.vk.ru',postData:'password=PRIVATE'}}),null);
  const malicious='Queen "); throw Error("PRIVATE"); //';assert.equal(evaluate(malicious,[]).ok,false);
  for(const data of [{query:'Queen',user_id:0},{query:'\nQueen',user_id:42},{query:'Queen',user_id:'42'}])assert.throws(()=>probeInput(data));
+});
+
+test('frame and testid diagnostics expose music structure without iframe credentials or login fields',()=>{
+ const doc={readyState:'complete',body:{},location:{href:'https://vk.ru/audios42',origin:'https://vk.ru'},
+  createTreeWalker:()=>({nextNode:()=>null}),
+  querySelectorAll:selector=>selector==='iframe'?[{src:'https://music.vk.com/?access_token=PRIVATE#PRIVATE',contentDocument:null}]:
+   selector==='[data-testid]'?['TopAudioPlayer_Title','AudioRow_Title','LoginForm_Password','AudioRow_?token=PRIVATE'].map(value=>({getAttribute:()=>value})):[]};
+ const result=inspectMusicLayout(doc);
+ assert.deepEqual(result.music_testids,['TopAudioPlayer_Title','AudioRow_Title']);
+ assert.deepEqual(result.frames,[{host:'music.vk.com',path_kind:'other',readable_document:false,same_origin:false}]);
+ assert.ok(!JSON.stringify(result).includes('PRIVATE'));
+ assert.ok(!JSON.stringify(result).includes('Password'));
 });
 
 test('admin control socket is private and offers fixed probes rather than arbitrary evaluation',async()=>{
