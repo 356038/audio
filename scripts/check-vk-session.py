@@ -37,6 +37,15 @@ def cookie_header(raw):
     return raw
 
 
+def browser_agent(raw):
+    raw = raw.strip()
+    if raw.lower().startswith('user-agent:'):
+        raw = raw[len('user-agent:'):].strip()
+    if not raw.startswith('Mozilla/') or not 20 <= len(raw) <= 2048 or any(ord(c) < 32 or ord(c) > 126 for c in raw):
+        raise ProbeError('Нужно значение User-Agent вашего браузера. Cookie вводится отдельно; ничего не отправлено.')
+    return raw
+
+
 def account_id(page):
     # Only VK's explicit current-user object; never arbitrary track owners/IDs.
     for pattern in [r'\bvk\.id\s*=\s*(0|[1-9][0-9]{0,14})\b',
@@ -140,20 +149,22 @@ def redirect_target(origin, current, location):
 
 
 class SessionProbe:
-    def __init__(self, host, cookie, opener=None):
+    def __init__(self, host, cookie, opener=None, user_agent=None):
         if host not in ('vk.ru', 'vk.com'):
             raise ProbeError('Разрешены только vk.ru и vk.com.')
         self.origin = 'https://' + host
         self.cookie = cookie_header(cookie)
+        self.user_agent = browser_agent(user_agent) if user_agent is not None else 'WAVE-session-check/1.0'
         self.opener = opener or urllib.request.build_opener(NoRedirect())
         names = {pair.strip().partition('=')[0] for pair in self.cookie.split(';')}
-        self.diagnostic = {'cookie_presence': {name: name in names for name in ('remixsid', 'remixsid6', 'remixnsid')}}
+        self.diagnostic = {'cookie_presence': {name: name in names for name in ('remixsid', 'remixsid6', 'remixnsid')},
+                           'browser_agent_provided': user_agent is not None}
 
     def request(self, path, data=None, _redirect_url=None, _hops=0):
         if path not in ('/audio', '/al_audio.php') and not re.fullmatch(r'/audios[1-9][0-9]{0,14}', path):
             raise ProbeError('Недопустимый адрес проверки.')
         encoded = None if data is None else urllib.parse.urlencode(data).encode()
-        headers = {'Cookie': self.cookie, 'User-Agent': 'WAVE-session-check/1.0',
+        headers = {'Cookie': self.cookie, 'User-Agent': self.user_agent,
                    'Accept-Encoding': 'identity', 'Referer': self.origin + '/audio'}
         if encoded is not None:
             headers.update({'Content-Type': 'application/x-www-form-urlencoded',
@@ -221,6 +232,7 @@ def main():
     parser.add_argument('--host', choices=['vk.ru', 'vk.com'], default='vk.ru')
     parser.add_argument('--user-id', type=int)
     parser.add_argument('--query', default='Queen')
+    parser.add_argument('--browser-agent', action='store_true', help='Запросить User-Agent вашего браузера перед Cookie')
     args = parser.parse_args()
     if not sys.stdin.isatty() or not sys.stderr.isatty():
         raise ProbeError('Запустите в интерактивном терминале: скрытый ввод обязателен.')
@@ -232,8 +244,9 @@ def main():
     print('Берите Cookie запроса к тому же сайту, который указан в --host.')
     with warnings.catch_warnings():
         warnings.simplefilter('error', getpass.GetPassWarning)
+        user_agent = browser_agent(getpass.getpass('User-Agent вашего Chrome (ввод скрыт): ')) if args.browser_agent else None
         secret = getpass.getpass('Cookie VK (ввод скрыт): ')
-    probe = SessionProbe(args.host, secret)
+    probe = SessionProbe(args.host, secret, user_agent=user_agent)
     del secret
     detected_id = probe.check_account(args.user_id)
     user_id = args.user_id or detected_id

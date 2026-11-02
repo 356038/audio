@@ -12,6 +12,28 @@ spec.loader.exec_module(probe)
 
 
 class Checks(unittest.TestCase):
+    def test_original_browser_agent_is_forwarded_without_logging_and_cannot_inject_headers(self):
+        agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36'
+        self.assertEqual(probe.browser_agent('User-Agent: '+agent), agent)
+        for value in ['session=PRIVATE', 'Mozilla/5.0 private\r\nCookie: session=PRIVATE', 'Mozilla/'+('x'*3000)]:
+            with self.assertRaises(probe.ProbeError):
+                probe.browser_agent(value)
+        calls=[]
+        class Response:
+            status=200
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self, count): return b'vk.id = 123;'
+        class Opener:
+            def open(self, request, timeout):
+                calls.append(request)
+                return Response()
+        session=probe.SessionProbe('vk.ru', 'remixsid=PRIVATE', Opener(), user_agent=agent)
+        self.assertEqual(session.check_account(123), 123)
+        self.assertEqual(calls[0].get_header('User-agent'), agent)
+        self.assertTrue(session.diagnostic['browser_agent_provided'])
+        self.assertNotIn(agent, json.dumps(session.diagnostic))
+
     def test_cookie_rejects_header_injection_and_accepts_copied_header(self):
         self.assertEqual(probe.cookie_header('Cookie: a=b; c=d'), 'a=b; c=d')
         for value in ['', 'a=b\r\nHost: other', 'a=b\nCookie: c=d', 'curl https://vk.ru', 'a=ю']:
