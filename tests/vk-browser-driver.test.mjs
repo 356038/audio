@@ -82,10 +82,19 @@ test('frame and testid diagnostics expose music structure without iframe credent
   querySelectorAll:selector=>selector==='iframe'?[{src:'https://music.vk.com/?access_token=PRIVATE#PRIVATE',contentDocument:null}]:
    selector==='[data-testid]'?['TopAudioPlayer_Title','AudioRow_Title','LoginForm_Password','AudioRow_?token=PRIVATE'].map(value=>({getAttribute:()=>value})):[]};
  const result=inspectMusicLayout(doc);
- assert.deepEqual(result.music_testids,['TopAudioPlayer_Title','AudioRow_Title']);
+ assert.deepEqual(result.music_testids,['AudioRow_Title','TopAudioPlayer_Title']);
  assert.deepEqual(result.frames,[{host:'music.vk.com',path_kind:'other',readable_document:false,same_origin:false}]);
  assert.ok(!JSON.stringify(result).includes('PRIVATE'));
  assert.ok(!JSON.stringify(result).includes('Password'));
+});
+
+test('music-card diagnostics are not displaced by the first forty player fields',()=>{
+ const fields=[...Array.from({length:50},(_,i)=>'AudioPlayer_Field_'+i),'MusicTrackRow_Title','MusicTrackRow_Authors'];
+ const doc={readyState:'complete',body:{},createTreeWalker:()=>({nextNode:()=>null}),
+  querySelectorAll:selector=>selector==='[data-testid]'?fields.map(value=>({getAttribute:()=>value})):[]};
+ const result=inspectMusicLayout(doc);
+ assert.equal(result.music_testids.length,40);
+ assert.deepEqual(result.music_testids.slice(0,2),['MusicTrackRow_Authors','MusicTrackRow_Title']);
 });
 
 test('admin control socket is private and offers fixed probes rather than arbitrary evaluation',async()=>{

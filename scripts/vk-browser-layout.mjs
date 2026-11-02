@@ -13,20 +13,22 @@ export function readTrackRows(query,doc=document){
   }
   const selector='.audio_row, .audio_item, [data-audio], [class*="AudioRow" i], [class*="AudioItem" i], [class*="TrackRow" i], [class*="MusicTrack" i], [data-testid*="AudioRow" i], [data-testid*="AudioItem" i], [data-testid*="TrackRow" i], [data-testid*="MusicTrack" i], [data-testid*="audio-row" i], [data-testid*="audio_row" i], [data-testid*="audio-track" i], [data-testid*="track-row" i]';
   const nodes=[];for(const root of roots){for(const node of root.querySelectorAll(selector)){nodes.push(node);if(nodes.length===300)break;}if(nodes.length===300)break;}
-  const artistSelector='.audio_row__performers, ._audio_row__performers, .audio_item__performer, .audio_row__performer, [class*="performer" i], [class*="artist" i], [data-testid*="performer" i], [data-testid*="artist" i], [data-testid*="subtitle" i], [class*="subtitle" i]';
+  const artistSelector='[data-testid="MusicTrackRow_Authors"], [data-testid="MusicTrackRow_Author"], .audio_row__performers, ._audio_row__performers, .audio_item__performer, .audio_row__performer, [class*="performer" i], [class*="artist" i], [data-testid*="performer" i], [data-testid*="artist" i], [data-testid*="author" i], [data-testid*="subtitle" i]';
+  const primaryTitleSelector='[data-testid="MusicTrackRow_Title"], [data-testid="AudioRow_Title"], [data-testid="AudioItem_Title"], .audio_row__title_inner, ._audio_row__title_inner, .audio_item__title';
   const titleSelector='.audio_row__title_inner, ._audio_row__title_inner, .audio_item__title, .audio_row__title, [class*="title" i]:not([class*="subtitle" i]), [data-testid*="title" i]:not([data-testid*="subtitle" i])';
   const durationSelector='.audio_row__duration, .audio_item__duration, [class*="duration" i], [data-testid*="duration" i]';
   const find=(node,selector)=>node.matches?.(selector)?node:node.querySelector(selector);
   const tracks=[];let parsed=0,blank=0,missingArtist=0;const seen=new Set();
   for(const node of nodes){
-    const titleNode=find(node,titleSelector);let scope=node;
+    const titleNode=find(node,primaryTitleSelector)||find(node,titleSelector);let scope=node;
     // A testid may label only the title, not its complete card. Find the nearest
     // group with that title and a performer/subtitle; never cross another song.
     if(titleNode?.parentElement){
       let parent=titleNode,best;
-      for(let depth=0;depth<6&&parent;depth++,parent=parent.parentElement){
+      for(let depth=0;depth<10&&parent;depth++,parent=parent.parentElement){
         if(parent.getAttribute('data-testid')?.startsWith('TopAudioPlayer'))break;
-        const otherTitles=[...parent.querySelectorAll(titleSelector)].filter(other=>other!==titleNode&&!other.contains(titleNode)&&!titleNode.contains(other));
+        const primaries=[...parent.querySelectorAll(primaryTitleSelector)];
+        const otherTitles=(primaries.length?primaries:[...parent.querySelectorAll(titleSelector)]).filter(other=>other!==titleNode&&!other.contains(titleNode)&&!titleNode.contains(other));
         if(otherTitles.length)break;
         if(find(parent,artistSelector)){best=parent;if(find(parent,durationSelector))break;}
       }
@@ -86,7 +88,7 @@ export function inspectMusicLayout(doc=document){
     const match=known.find(title=>value===title||title!=='queen'&&value.startsWith(title+' ('));
     if(!match)continue;
     const chain=[];let element=text.parentElement;
-    for(let depth=0;depth<5&&element;depth++,element=element.parentElement){
+    for(let depth=0;depth<7&&element;depth++,element=element.parentElement){
       const classes=[...element.classList].filter(value=>/^[A-Za-z_][A-Za-z0-9_-]{0,79}$/.test(value)).slice(0,5);
       const testid=element.getAttribute('data-testid');const role=element.getAttribute('role');
       chain.push({tag:element.tagName.toLowerCase().slice(0,40),classes,
@@ -96,12 +98,13 @@ export function inspectMusicLayout(doc=document){
     samples.push({sample:match,chain});
    }
   }
-  samples.sort((a,b)=>Number(a.sample==='queen')-Number(b.sample==='queen'));
+  const isRow=sample=>sample.chain.some(element=>/^(?:MusicTrackRow|AudioRow|AudioItem)/.test(element.testid||''));
+  samples.sort((a,b)=>Number(!isRow(a))-Number(!isRow(b))||Number(a.sample==='queen')-Number(b.sample==='queen'));
   const testids=new Set(),tags=new Set();
   for(const root of roots){
     for(const element of root.querySelectorAll('[data-testid]')){
       const value=element.getAttribute('data-testid');
-      if(value&&/^[A-Za-z][A-Za-z0-9:_-]{0,79}$/.test(value)&&/audio|track|music/i.test(value)&&testids.size<40)testids.add(value);
+      if(value&&/^[A-Za-z][A-Za-z0-9:_-]{0,79}$/.test(value)&&/audio|track|music/i.test(value)&&testids.size<200)testids.add(value);
     }
     for(const element of root.querySelectorAll('*')){
       const tag=String(element.tagName||'').toLowerCase();
@@ -119,10 +122,12 @@ export function inspectMusicLayout(doc=document){
     try{item.readable_document=Boolean(frame.contentDocument);}catch{}
     frames.push(item);
   }
+  const rowPriority=id=>/^(MusicTrackRow|AudioRow|AudioItem|TrackRow)/i.test(id)?0:/^(TopAudioPlayer|AudioPlayer)/i.test(id)?2:1;
+  const musicTestids=[...testids].sort((a,b)=>rowPriority(a)-rowPriority(b)||a.localeCompare(b)).slice(0,40);
   return {ready_state:['loading','interactive','complete'].includes(doc.readyState)?doc.readyState:'unknown',
     inspected_roots:roots.length,
     iframe_count:doc.querySelectorAll('iframe').length,
-    frames,music_testids:[...testids],music_custom_tags:[...tags],
+    frames,music_testids:musicTestids,music_custom_tags:[...tags],
     legacy_row_count:doc.querySelectorAll('.audio_row, .audio_item, [data-audio]').length,
     samples:samples.slice(0,6)};
 }
