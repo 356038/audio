@@ -15,7 +15,9 @@ MAX_BODY = 2 * 1024 * 1024
 
 
 class ProbeError(Exception):
-    pass
+    def __init__(self, message, diagnostic=None):
+        super().__init__(message)
+        self.diagnostic = diagnostic
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -37,14 +39,14 @@ def cookie_header(raw):
 
 def account_id(page):
     # Only VK's explicit current-user object; never arbitrary track owners/IDs.
-    for pattern in [r'\bvk\.id\s*=\s*([1-9][0-9]{0,14})\b',
+    for pattern in [r'\bvk\.id\s*=\s*(0|[1-9][0-9]{0,14})\b',
                     r'\b(?:var\s+)?vk\s*=\s*\{([^{}]{0,8192})\}']:
         match = re.search(pattern, page)
         if match:
             value = match.group(1)
             if value.isdigit():
                 return int(value)
-            identity = re.search(r'''(?:^|,)\s*["']?id["']?\s*:\s*([1-9][0-9]{0,14})\b''', value)
+            identity = re.search(r'''(?:^|,)\s*["']?id["']?\s*:\s*(0|[1-9][0-9]{0,14})\b''', value)
             if identity:
                 return int(identity.group(1))
     return None
@@ -55,6 +57,31 @@ def label(value):
     return ''.join(c for c in value if not unicodedata.category(c).startswith('C'))[:180]
 
 
+def response_shape(value):
+    """Only fixed labels and a bounded numeric status; never provider strings."""
+    def kind(item):
+        return {dict: 'object', list: 'array', str: 'string', int: 'integer',
+                float: 'number', bool: 'boolean', type(None): 'null'}.get(type(item), 'other')
+    result = {'root_type': kind(value)}
+    if not isinstance(value, dict):
+        return result
+    result['has_error'] = 'error' in value
+    payload = value.get('payload')
+    result['payload_type'] = kind(payload)
+    if not isinstance(payload, list):
+        return result
+    result['payload_types'] = [kind(item) for item in payload[:6]]
+    code = payload[0] if payload else None
+    if isinstance(code, str) and re.fullmatch(r'-?[0-9]{1,5}', code):
+        code = int(code)
+    result['payload_code'] = code if type(code) is int and abs(code) < 100000 else 'unknown'
+    if len(payload) > 1 and isinstance(payload[1], list):
+        reply = payload[1]
+        result['reply_types'] = [kind(item) for item in reply[:6]]
+        result['has_playlist'] = any(isinstance(item, dict) and 'playlist' in item for item in reply[:6])
+    return result
+
+
 def search_rows(body):
     try:
         value = json.loads(body.removeprefix('<!--').strip())
@@ -63,13 +90,13 @@ def search_rows(body):
     try:
         payload = value['payload']
         if payload[0] not in (0, '0'):
-            raise ProbeError('VK не разрешил поиск этой сессии. Проверку входа нужно пройти в браузере.')
+            raise ProbeError('VK вернул ненулевой код веб-запроса. Причина не установлена; это ещё не подтверждает необходимость повторного входа.', response_shape(value))
         playlist = payload[1][1]['playlist']
         rows = [] if playlist is None else playlist['list']
         if not isinstance(rows, list):
             raise ValueError()
     except (KeyError, IndexError, TypeError, ValueError):
-        raise ProbeError('Формат ответа VK отличается от ожидаемого. Доступ к поиску не подтверждён.') from None
+        raise ProbeError('Формат ответа VK отличается от ожидаемого. Доступ к поиску не подтверждён.', response_shape(value)) from None
     tracks = []
     for row in rows:
         if not isinstance(row, list) or len(row) < 6:
@@ -90,9 +117,11 @@ class SessionProbe:
         self.origin = 'https://' + host
         self.cookie = cookie_header(cookie)
         self.opener = opener or urllib.request.build_opener(NoRedirect())
+        names = {pair.strip().partition('=')[0] for pair in self.cookie.split(';')}
+        self.diagnostic = {'cookie_presence': {name: name in names for name in ('remixsid', 'remixsid6', 'remixnsid')}}
 
     def request(self, path, data=None):
-        if path not in ('/audio', '/al_audio.php'):
+        if path not in ('/audio', '/al_audio.php') and not re.fullmatch(r'/audios[1-9][0-9]{0,14}', path):
             raise ProbeError('Недопустимый адрес проверки.')
         encoded = None if data is None else urllib.parse.urlencode(data).encode()
         headers = {'Cookie': self.cookie, 'User-Agent': 'WAVE-session-check/1.0',
@@ -121,10 +150,29 @@ class SessionProbe:
         return body.decode('utf-8', 'replace')
 
     def search(self, query, user_id):
-        return search_rows(self.request('/al_audio.php', {
-            'al': 1, 'act': 'section', 'claim': 0, 'is_layer': 0,
-            'owner_id': user_id, 'section': 'search', 'q': query,
-        }))
+        try:
+            return search_rows(self.request('/al_audio.php', {
+                'al': 1, 'act': 'section', 'claim': 0, 'is_layer': 0,
+                'owner_id': user_id, 'section': 'search', 'q': query,
+            }))
+        except ProbeError as error:
+            error.diagnostic = {**self.diagnostic, **(error.diagnostic or {})}
+            raise
+
+    def check_account(self, expected=None):
+        try:
+            actual = account_id(self.request('/audios' + str(expected) if expected else '/audio'))
+        except ProbeError as error:
+            error.diagnostic = {**self.diagnostic, **(error.diagnostic or {})}
+            raise
+        self.diagnostic['page_identity'] = ('unknown' if actual is None else
+                                             'anonymous' if actual == 0 else
+                                             'different_account' if expected and actual != expected else 'confirmed')
+        if actual == 0:
+            raise ProbeError('На странице VK текущий аккаунт не авторизован. Поиск не выполнялся.', self.diagnostic)
+        if expected and actual and actual != expected:
+            raise ProbeError('VK распознал другой аккаунт. Поиск не выполнялся.', self.diagnostic)
+        return actual
 
 
 def main():
@@ -146,7 +194,8 @@ def main():
         secret = getpass.getpass('Cookie VK (ввод скрыт): ')
     probe = SessionProbe(args.host, secret)
     del secret
-    user_id = args.user_id or account_id(probe.request('/audio'))
+    detected_id = probe.check_account(args.user_id)
+    user_id = args.user_id or detected_id
     if not user_id:
         raise ProbeError('Не удалось определить ID текущего аккаунта. Перезапустите с --user-id ЧИСЛОВОЙ_ID. Если VK просит войти, сначала войдите в браузере.')
     tracks = probe.search(args.query, user_id)
@@ -161,6 +210,8 @@ if __name__ == '__main__':
         main()
     except (ProbeError, EOFError, KeyboardInterrupt) as error:
         print(str(error) if isinstance(error, ProbeError) else 'Проверка остановлена.', file=sys.stderr)
+        if isinstance(error, ProbeError) and error.diagnostic:
+            print('Диагностика (без секретов): ' + json.dumps(error.diagnostic, ensure_ascii=False), file=sys.stderr)
         sys.exit(1)
     except Exception:
         # Never print provider bodies, request objects, cookies or tracebacks.

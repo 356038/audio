@@ -23,6 +23,46 @@ class Checks(unittest.TestCase):
         self.assertEqual(probe.account_id('var vk = {"id":456};'), 456)
         self.assertEqual(probe.account_id('vk.id = 789;'), 789)
         self.assertIsNone(probe.account_id('{"playlist":{"owner_id":999},"id":888}'))
+        self.assertEqual(probe.account_id('var vk = {id:0, lang:0};'), 0)
+
+    def test_failed_response_diagnostics_never_include_provider_strings(self):
+        value = {'payload':[3, ['https://login.example/?cookie=PRIVATE', {'redirect':'PRIVATE', 'remixsid':'PRIVATE'}]], 'secret':'PRIVATE'}
+        with self.assertRaises(probe.ProbeError) as error:
+            probe.search_rows(json.dumps(value))
+        diagnostic = error.exception.diagnostic
+        self.assertEqual(diagnostic['payload_code'], 3)
+        self.assertEqual(diagnostic['reply_types'], ['string', 'object'])
+        self.assertNotIn('PRIVATE', json.dumps(diagnostic))
+        self.assertNotIn('login.example', json.dumps(diagnostic))
+        self.assertNotIn('redirect', json.dumps(diagnostic))
+        for code in ['PRIVATE', 9999999999999, True, {'cookie':'PRIVATE'}]:
+            self.assertEqual(probe.response_shape({'payload':[code]})['payload_code'], 'unknown')
+
+    def test_account_check_distinguishes_anonymous_mismatch_and_unrecognized_page(self):
+        for page, expected, state, failure in [('vk.id = 0;', 123, 'anonymous', True),
+                                                ('vk.id = 456;', 123, 'different_account', True),
+                                                ('vk.id = 123;', 123, 'confirmed', False),
+                                                ('<html>unknown page</html>', 123, 'unknown', False)]:
+            calls = []
+            class Response:
+                status=200
+                def __enter__(self): return self
+                def __exit__(self, *args): pass
+                def read(self, count): return page.encode()
+            class Opener:
+                def open(self, request, timeout):
+                    calls.append(request)
+                    return Response()
+            session = probe.SessionProbe('vk.ru', 'remixsid=PRIVATE; other=PRIVATE', Opener())
+            if failure:
+                with self.assertRaises(probe.ProbeError):
+                    session.check_account(expected)
+            else:
+                session.check_account(expected)
+            self.assertEqual(session.diagnostic['page_identity'], state)
+            self.assertEqual(session.diagnostic['cookie_presence']['remixsid'], True)
+            self.assertNotIn('PRIVATE', json.dumps(session.diagnostic))
+            self.assertEqual([r.full_url for r in calls], ['https://vk.ru/audios123'])
 
     def test_search_does_not_print_urls_or_hashes_and_rejects_challenges(self):
         row = [1, 2, 'https://secret.example/signed', '<b>Song</b>\x1b[31m', 'Artist', 60, 'private hash']
