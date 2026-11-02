@@ -2,8 +2,10 @@
 import {spawn} from 'node:child_process';
 import {EventEmitter} from 'node:events';
 import http from 'node:http';
-import {chmod} from 'node:fs/promises';
+import {chmod,stat} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
+import {readTrackRows,inspectMusicLayout} from './vk-browser-layout.mjs';
+export {readTrackRows,inspectMusicLayout};
 
 export const CONTROL_SOCKET='/run/wave-vk-browser/control.sock';
 export const chromeArgs=profile=>['--user-data-dir='+profile,'--remote-debugging-pipe',
@@ -76,44 +78,6 @@ export function requestObservation(params){
   return result;
 }
 
-// Reads rendered music rows rather than assuming a legacy API returned a search.
-export function readTrackRows(query,doc=document){
-  const normalize=value=>String(value||'').normalize('NFKD').toLowerCase().replace(/\p{M}/gu,'').replace(/[^\p{L}\p{N}]+/gu,' ').trim();
-  const clean=value=>String(value||'').replace(/[\p{Cc}\p{Cf}]/gu,'').trim().slice(0,180);
-  const nodes=[...doc.querySelectorAll('.audio_row, .audio_item, [data-audio]')].slice(0,200);
-  const tracks=[];let parsed=0,blank=0;const seen=new Set();
-  for(const node of nodes){
-    const text=selector=>node.querySelector(selector)?.textContent||'';
-    let artist=text('.audio_row__performers, ._audio_row__performers, .audio_item__performer, .audio_row__performer');
-    let title=text('.audio_row__title_inner, ._audio_row__title_inner, .audio_item__title, .audio_row__title');
-    let duration=0,id=node.getAttribute('data-full-id');
-    const time=text('.audio_row__duration, .audio_item__duration').trim();
-    if(/^\d{1,2}:\d{2}(?::\d{2})?$/.test(time))duration=time.split(':').reduce((seconds,part)=>seconds*60+Number(part),0);
-    let data;try{const raw=node.getAttribute('data-audio');if(raw&&raw.length<32768)data=JSON.parse(raw);}catch{}
-    if(Array.isArray(data)){
-      if(!title&&typeof data[3]==='string')title=data[3].replace(/<[^>]*>/g,'');
-      if(!artist&&typeof data[4]==='string')artist=data[4].replace(/<[^>]*>/g,'');
-      if(!duration&&Number.isFinite(data[5]))duration=data[5];
-      if(!id&&Number.isSafeInteger(data[0])&&Number.isSafeInteger(data[1]))id=data[1]+'_'+data[0];
-    }else if(data&&typeof data==='object'){
-      if(!title&&typeof data.title==='string')title=data.title;
-      if(!artist&&typeof data.artist==='string')artist=data.artist;
-      if(!duration&&Number.isFinite(data.duration))duration=data.duration;
-    }
-    artist=clean(artist);title=clean(title);if(!artist&&!title)continue;parsed++;
-    if(!title){blank++;continue;}
-    const key=artist+'\0'+title;if(seen.has(key))continue;seen.add(key);
-    const q=normalize(query),artistName=normalize(artist),titleName=normalize(title);
-    const matches=text=>(' '+text+' ').includes(' '+q+' ');
-    if(!matches(artistName)&&!matches(titleName))continue;
-    const rank=artistName===q?3:matches(artistName)?2:1;
-    tracks.push({artist,title,duration:duration>0&&duration<86400?duration:0,...(/^-?\d+_\d+$/.test(id||'')?{id}:{}),rank});
-  }
-  tracks.sort((a,b)=>b.rank-a.rank);
-  return {received:nodes.length,parsed_rows:parsed,blank_titles:blank,matched:tracks.length,
-    tracks:tracks.slice(0,8).map(({rank,...track})=>track)};
-}
-
 // Runs on the native search page. Never reads/exports cookies or web API bodies.
 export function pageSearch(query,userId,readRows){
   if(location.protocol!=='https:'||!['vk.ru','vk.com'].includes(location.hostname))return {ok:false,code:'vk_page_required'};
@@ -167,16 +131,27 @@ export async function createControl(rpc,socketPath=CONTROL_SOCKET){
         let targets=[];for(let i=0;i<20;i++){targets=await pages();if(targets.length)break;await new Promise(resolve=>setTimeout(resolve,250));}
         if(!targets.length){json(409,{ok:false,code:'open_vk_music_page',observed:recent});return;}
         const sessionId=sessions.get(targets[0].targetId);
-        const origin=new URL(targets[0].url).origin;
-        const navigation=await rpc.call('Page.navigate',{url:origin+'/audios'+input.user_id+'?q='+encodeURIComponent(input.query)},sessionId,5000);
-        if(navigation.errorText){json(502,{ok:false,code:'native_page_navigation_failed',observed:recent});return;}
+        const pageUrl=new URL(targets[0].url);
+        if(pageUrl.pathname!=='/audios'+input.user_id||pageUrl.searchParams.get('q')!==input.query){
+          const navigation=await rpc.call('Page.navigate',{url:pageUrl.origin+'/audios'+input.user_id+'?q='+encodeURIComponent(input.query)},sessionId,5000);
+          if(navigation.errorText){json(502,{ok:false,code:'native_page_navigation_failed',observed:recent});return;}
+        }
+        // Trusted, read-only helper can be updated independently of login/Chrome.
+        const helper=new URL('./vk-browser-layout.mjs',import.meta.url);
+        helper.searchParams.set('revision',String((await stat(fileURLToPath(helper))).mtimeMs));
+        const layout=await import(helper.href);
         let value={ok:false,code:'native_page_not_ready'};
         const deadline=Date.now()+11000;
         for(let attempt=0;attempt<24&&Date.now()<deadline;attempt++){
           await new Promise(resolve=>setTimeout(resolve,500));
-          let result;try{result=await rpc.call('Runtime.evaluate',{expression:`(${pageSearch.toString()})(${JSON.stringify(input.query)},${input.user_id},${readTrackRows.toString()})`,returnByValue:true},sessionId,Math.max(100,Math.min(2000,deadline-Date.now())));}catch{continue;}
+          let result;try{result=await rpc.call('Runtime.evaluate',{expression:`(${pageSearch.toString()})(${JSON.stringify(input.query)},${input.user_id},${layout.readTrackRows.toString()})`,returnByValue:true},sessionId,Math.max(100,Math.min(2000,deadline-Date.now())));}catch{continue;}
           if(result.exceptionDetails)continue;value=result.result?.value||value;
           if(value.ok||value.code==='login_required'||value.code==='different_account')break;
+        }
+        if(!value.ok){
+          try{const snapshot=await rpc.call('Runtime.evaluate',{expression:`(${layout.inspectMusicLayout.toString()})()`,returnByValue:true},sessionId,1500);
+            if(!snapshot.exceptionDetails)value.layout=snapshot.result?.value;
+          }catch{}
         }
         json(200,{...value,observed:recent});
       }finally{busy=false;}

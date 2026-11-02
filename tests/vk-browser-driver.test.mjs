@@ -90,3 +90,21 @@ test('admin control socket is private and offers fixed probes rather than arbitr
   const navigation=calls.find(call=>call.method==='Page.navigate');assert.equal(navigation.params.url,'https://vk.ru/audios42?q=Queen');
  }finally{if(server)await new Promise(resolve=>server.close(resolve));await rm(dir,{recursive:true,force:true});}
 });
+
+test('an already opened native search page is read without reloading it',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'wave-vk-warm-')),socket=join(dir,'control.sock');
+ const rpc=new EventEmitter();rpc.closed=false;let navigated=false;
+ rpc.call=async(method)=>{
+  if(method==='Target.getTargets')return {targetInfos:[{type:'page',url:'https://vk.ru/audios42?q=Queen',targetId:'page'}]};
+  if(method==='Target.attachToTarget')return {sessionId:'session'};
+  if(method==='Page.navigate'){navigated=true;return {};}
+  if(method==='Runtime.evaluate')return {result:{value:{ok:true,matched:1,tracks:[{artist:'Queen',title:'Song'}]}}};
+  return {};
+ };
+ let server;
+ try{
+  server=await createControl(rpc,socket);
+  const response=await new Promise((resolve,reject)=>{const req=http.request({socketPath:socket,path:'/probe',method:'POST'},res=>{let text='';res.on('data',chunk=>{text+=chunk;});res.on('end',()=>resolve(JSON.parse(text)));});req.on('error',reject);req.end(JSON.stringify({query:'Queen',user_id:42}));});
+  assert.equal(response.ok,true);assert.equal(navigated,false);
+ }finally{if(server)await new Promise(resolve=>server.close(resolve));await rm(dir,{recursive:true,force:true});}
+});
