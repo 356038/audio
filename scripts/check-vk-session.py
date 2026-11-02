@@ -110,6 +110,35 @@ def search_rows(body):
     return tracks
 
 
+def redirect_target(origin, current, location):
+    """Classify without exposing a Location's query/hash; approve only music GETs."""
+    diagnostic = {'target_host': 'other', 'route': 'other', 'same_origin': False}
+    if not isinstance(location, str) or len(location) > 8192 or any(ord(c) < 32 for c in location):
+        return diagnostic, None
+    try:
+        target = urllib.parse.urlsplit(urllib.parse.urljoin(current, location))
+        host = target.hostname
+        if host in ('vk.ru', 'vk.com', 'm.vk.ru', 'm.vk.com', 'id.vk.ru', 'id.vk.com', 'login.vk.ru', 'login.vk.com'):
+            diagnostic['target_host'] = host
+        diagnostic['same_origin'] = (target.scheme == 'https' and host == urllib.parse.urlsplit(origin).hostname
+                                     and target.port in (None, 443) and not target.username and not target.password)
+        path = target.path.lower()
+        if re.match(r'^/(?:challenge|captcha|429|security_check)(?:[/.]|$)', path):
+            diagnostic['route'] = 'challenge'
+        elif host in ('id.vk.ru', 'id.vk.com', 'login.vk.ru', 'login.vk.com') or re.match(r'^/(?:login|auth|join)(?:[/.]|$)', path):
+            diagnostic['route'] = 'login'
+        elif re.fullmatch(r'/(?:audio|music|audios[1-9][0-9]{0,14})/?', target.path):
+            diagnostic['route'] = 'music'
+        parameters = urllib.parse.parse_qsl(target.query, keep_blank_values=True, max_num_fields=8)
+        safe_query = all((key == 'q' and len(value) <= 200 and all(ord(c) >= 32 for c in value)) or
+                         (key == 'section' and value in ('all', 'my', 'search')) for key, value in parameters)
+        if diagnostic['same_origin'] and diagnostic['route'] == 'music' and safe_query:
+            return diagnostic, urllib.parse.urlunsplit(('https', urllib.parse.urlsplit(origin).netloc, target.path, target.query, ''))
+    except (ValueError, TypeError):
+        pass
+    return diagnostic, None
+
+
 class SessionProbe:
     def __init__(self, host, cookie, opener=None):
         if host not in ('vk.ru', 'vk.com'):
@@ -120,7 +149,7 @@ class SessionProbe:
         names = {pair.strip().partition('=')[0] for pair in self.cookie.split(';')}
         self.diagnostic = {'cookie_presence': {name: name in names for name in ('remixsid', 'remixsid6', 'remixnsid')}}
 
-    def request(self, path, data=None):
+    def request(self, path, data=None, _redirect_url=None, _hops=0):
         if path not in ('/audio', '/al_audio.php') and not re.fullmatch(r'/audios[1-9][0-9]{0,14}', path):
             raise ProbeError('Недопустимый адрес проверки.')
         encoded = None if data is None else urllib.parse.urlencode(data).encode()
@@ -129,7 +158,7 @@ class SessionProbe:
         if encoded is not None:
             headers.update({'Content-Type': 'application/x-www-form-urlencoded',
                             'X-Requested-With': 'XMLHttpRequest', 'Origin': self.origin})
-        request = urllib.request.Request(self.origin + path, encoded, headers)
+        request = urllib.request.Request(_redirect_url or self.origin + path, encoded, headers)
         try:
             with self.opener.open(request, timeout=25) as response:
                 if response.status != 200:
@@ -137,9 +166,21 @@ class SessionProbe:
                 body = response.read(MAX_BODY + 1)
         except urllib.error.HTTPError as error:
             status = error.code
+            location = error.headers.get('Location')
             error.close()
             if 300 <= status < 400:
-                raise ProbeError('VK перенаправляет запрос. Откройте музыку в браузере и используйте Cookie и --host того же сайта; перенаправления не выполнялись.') from None
+                detail, target = redirect_target(self.origin, request.full_url, location)
+                detail.update({'status': status, 'stage': 'music_page' if data is None else 'search'})
+                self.diagnostic.setdefault('redirects', []).append(detail)
+                if status in (301, 302, 303, 307, 308) and data is None and target and _hops < 2:
+                    return self.request(path, _redirect_url=target, _hops=_hops + 1)
+                if detail['route'] == 'login':
+                    message = 'VK перенаправляет серверный запрос на вход. Сессия браузера пока не принята сервером; перенаправление на вход не выполнялось.'
+                elif detail['route'] == 'challenge':
+                    message = 'VK перенаправляет на проверку безопасности. Проверка остановлена.'
+                else:
+                    message = 'Перенаправление VK остановлено: другой сайт, неизвестный маршрут или предел переходов. Направление указано в диагностике без секретных ссылок.'
+                raise ProbeError(message, self.diagnostic) from None
             if status in (401, 403, 429):
                 raise ProbeError(f'HTTP {status}: доступ ограничен. Автоматических повторов не было.') from None
             raise ProbeError(f'Сервер вернул HTTP {status}. Значения сессии не выводились.') from None

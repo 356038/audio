@@ -94,6 +94,52 @@ class Checks(unittest.TestCase):
         with self.assertRaises(probe.ProbeError):
             probe.SessionProbe('vk.ru.other.example', 'a=b')
 
+    def test_redirect_classification_hides_urls_and_limits_allowed_routes(self):
+        for location, route, allowed in [('/music?q=Queen', 'music', True),
+                                          ('/audios123', 'music', True),
+                                          ('/music?hash=PRIVATE', 'music', False),
+                                          ('/login?token=PRIVATE', 'login', False),
+                                          ('https://login.vk.ru/?sid=PRIVATE', 'login', False),
+                                          ('/challenge.html?hash=PRIVATE', 'challenge', False),
+                                          ('https://vk.com/music', 'music', False),
+                                          ('http://vk.ru/music', 'music', False),
+                                          ('https://vk.ru.evil.example/music', 'music', False),
+                                          ('https://PRIVATE@vk.ru/music', 'music', False),
+                                          ('https://vk.ru:444/music', 'music', False),
+                                          ('/logout', 'other', False)]:
+            detail, target = probe.redirect_target('https://vk.ru', 'https://vk.ru/audios123', location)
+            self.assertEqual(detail['route'], route)
+            self.assertEqual(target is not None, allowed, location)
+            self.assertNotIn('PRIVATE', json.dumps(detail))
+
+    def test_only_normal_get_music_redirects_are_followed_and_loops_stop(self):
+        for mode in ('music', 'login', 'challenge', 'cross_origin', 'loop', 'post'):
+            calls=[]
+            class Response:
+                status=200
+                def __enter__(self): return self
+                def __exit__(self, *args): pass
+                def read(self, count): return b'vk.id = 123;'
+            class Opener:
+                def open(self, request, timeout):
+                    calls.append(request)
+                    if mode == 'music' and len(calls) == 2:
+                        return Response()
+                    location = {'music':'/music', 'login':'https://login.vk.ru/?hash=PRIVATE',
+                                'challenge':'/challenge.html?token=PRIVATE',
+                                'cross_origin':'https://vk.com/music', 'loop':'/music', 'post':'/music'}[mode]
+                    raise urllib.error.HTTPError(request.full_url, 302, '', {'Location':location}, io.BytesIO())
+            session = probe.SessionProbe('vk.ru', 'session=PRIVATE', Opener())
+            if mode == 'music':
+                self.assertEqual(session.check_account(123), 123)
+            else:
+                with self.assertRaises(probe.ProbeError):
+                    if mode == 'post': session.search('Queen', 123)
+                    else: session.check_account(123)
+            self.assertEqual(len(calls), 2 if mode == 'music' else 3 if mode == 'loop' else 1)
+            self.assertTrue(all(r.full_url.startswith('https://vk.ru/') for r in calls))
+            self.assertNotIn('PRIVATE', json.dumps(session.diagnostic))
+
     def test_body_bound_and_read_only_search_request(self):
         calls=[]
         class Response:
