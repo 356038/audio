@@ -1,4 +1,5 @@
 import {searchAudius,genreAudius,AudiusError} from './audius.mjs';
+import {searchArchive} from './archive.mjs';
 const cache=new Map(),feeds=new Map();
 const FEED_TTL=12*3600000;
 const normalized=value=>typeof value==='string'?value.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim():'';
@@ -51,8 +52,10 @@ async function generatePage(env,feed,store,page){
   for(let round=0;round<2&&mixTracks(ranked,feed.artists).length<20;round++){
     const sources=feed.sources.filter(source=>!source.done);if(!sources.length)break;
     const results=await Promise.allSettled(sources.map(async source=>{
-      const items=source.kind==='genre'?await genreAudius(env,source.name,40,source.offset):(await searchAudius(env,{query:source.name,count:40,offset:source.offset})).items;
-      source.offset+=40;source.done=items.length<40;
+      let items;
+      if(source.kind==='archive-artist'){
+        const result=await searchArchive(env,{query:source.name,count:5,offset:source.offset});items=result.items;source.offset=result.next_offset??source.offset+result.received;source.done=result.next_offset===null;
+      }else{items=source.kind==='genre'?await genreAudius(env,source.name,40,source.offset):(await searchAudius(env,{query:source.name,count:40,offset:source.offset})).items;source.offset+=40;source.done=items.length<40;}
       for(const track of items)if(track.playable&&!feed.seen.has(track.id))feed.pending.set(track.id,track);
     }));
     if(!ranked.length&&results.every(result=>result.status==='rejected'))throw results[0].reason;
@@ -98,8 +101,10 @@ export async function recommendations(env,user,store,{cursor=null,refresh=false,
   });
   const topArtists=[...artists.values()].sort((a,b)=>b.weight-a.weight);
   const topGenres=[...genres.values()].sort((a,b)=>b.weight-a.weight).slice(0,2);
-  const sources=topGenres.map(genre=>({kind:'genre',name:genre.name,offset:0,done:false}));
-  for(const artist of topArtists.slice(0,3-sources.length))sources.push({kind:'artist',name:artist.name,offset:0,done:false});
+  const useAudius=Boolean(env.AUDIUS_API_KEY&&env.AUDIUS_BEARER_TOKEN)||env.WAVE_ARCHIVE_ENABLED!=='1';
+  const sources=useAudius?topGenres.map(genre=>({kind:'genre',name:genre.name,offset:0,done:false})):[];
+  if(useAudius)for(const artist of topArtists.slice(0,3-sources.length))sources.push({kind:'artist',name:artist.name,offset:0,done:false});
+  if(env.WAVE_ARCHIVE_ENABLED==='1')for(const artist of topArtists.slice(0,2))sources.push({kind:'archive-artist',name:artist.name,offset:0,done:false});
   if(!sources.length)return {items:[],personalized:false,reason:'Для рекомендаций пока недостаточно данных об исполнителях и жанрах.',history_count:history.length,next_cursor:null};
   if(previous)for(const source of sources){const old=previous.sources.find(item=>item.kind===source.kind&&normalized(item.name)===normalized(source.name));if(old){source.offset=old.offset;source.done=old.done;}}
   const feed={id:crypto.randomUUID(),key:env.AUDIUS_API_KEY,user,history,artists,hasStyles:topGenres.length>0,sources,seen:new Set([...(previous?.seen||[]),...(refresh?exclude:[])]),pending:new Map(previous?.pending||[]),pages:new Map(),generated:-1,expires:Date.now()+FEED_TTL,loading:null};

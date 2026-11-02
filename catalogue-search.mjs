@@ -1,5 +1,6 @@
 import {AudiusError,searchAudius,searchFullAudius,searchAudiusUsers,artistCatalogueAudius} from './audius.mjs';
 import {trackVersions} from './track-versions.mjs';
+import {searchArchive} from './archive.mjs';
 
 const cache=new Map(),sessions=new Map();
 const PAGE=40,MAX_RESULTS=1000,TTL=10*60000;
@@ -99,7 +100,10 @@ function addCandidates(state,items,global){
 }
 async function readSource(env,state,source){
   try{
-    let items,received;
+    let items,received,archiveNext;
+    if(source.kind==='archive'){
+      const result=await searchArchive(env,{query:source.query,offset:source.offset,count:5,signal:env.AUDIUS_SEARCH_SIGNAL});items=result.items;received=result.received;archiveNext=result.next_offset;
+    }else
     if(source.kind==='full'||source.kind==='popular'){
       let result;
       try{result=await searchFullAudius(env,{query:source.query,offset:source.offset,count:PAGE,sort:source.kind==='popular'?'popular':'relevant'});}
@@ -114,7 +118,7 @@ async function readSource(env,state,source){
     }else{
       const result=await searchAudius(env,{query:source.query,offset:source.offset,count:PAGE});items=result.items;received=result.received??(result.next_offset===null?items.length:result.next_offset-source.offset);
     }
-    state.successes++;source.offset+=received;source.done=received<PAGE;source.failures=0;source.error=null;
+    state.successes++;source.offset=source.kind==='archive'&&archiveNext!==null?archiveNext:source.offset+received;source.done=source.kind==='archive'?archiveNext===null:received<PAGE;source.failures=0;source.error=null;
     addCandidates(state,items,source.kind!=='artist');
     state.rows[source.kind]=(state.rows[source.kind]||0)+received;
   }catch(error){
@@ -140,12 +144,14 @@ async function lookupArtists(env,state,query){
   catch(error){state.lastError=error;state.lookupErrors.push({query,code:error.code||'unclassified',http_status:error.upstreamStatus||null});}
 }
 async function initialize(env,state){
-  addSource(state,'full',state.query);addSource(state,'legacy',state.query);
+  const useAudius=Boolean(env.AUDIUS_API_KEY&&env.AUDIUS_BEARER_TOKEN)||env.WAVE_ARCHIVE_ENABLED!=='1';
+  if(useAudius){addSource(state,'full',state.query);addSource(state,'legacy',state.query);}
+  if(env.WAVE_ARCHIVE_ENABLED==='1')addSource(state,'archive',state.query);
   await Promise.all([
     ...state.sources.map(source=>readSource(requestEnv(env),state,source)),
-    lookupArtists(env,state,state.titleQuery?state.hints[0]:state.query),
+    ...(useAudius?[lookupArtists(env,state,state.titleQuery?state.hints[0]:state.query)]:[]),
   ]);
-  await readArtists(requestEnv(env),state);
+  if(useAudius)await readArtists(requestEnv(env),state);
   // Ambiguous names benefit from a popularity-ranked page, which is merged
   // with relevance results instead of allowing a low-quality namesake to win.
   if(state.sources.some(source=>source.kind==='legacy'&&source.offset>=PAGE)){
@@ -155,13 +161,14 @@ async function initialize(env,state){
   // Broaden sparse results and Cyrillic artist names; never substitute another catalogue.
   if(state.candidates.size<20||/[а-яё]/i.test(state.query)){
     for(const variant of state.variants.slice(1)){
-      addSource(state,'full',variant);addSource(state,'legacy',variant);
+      if(useAudius){addSource(state,'full',variant);addSource(state,'legacy',variant);}
+      if(env.WAVE_ARCHIVE_ENABLED==='1')addSource(state,'archive',variant);
       await Promise.all([
         ...state.sources.filter(source=>source.query===variant&&source.offset===0&&!source.done).map(source=>readSource(requestEnv(env),state,source)),
-        lookupArtists(env,state,variant),
+        ...(useAudius?[lookupArtists(env,state,variant)]:[]),
       ]);
     }
-    await readArtists(requestEnv(env),state);
+    if(useAudius)await readArtists(requestEnv(env),state);
   }
   if(!state.successes)throw state.lastError||new AudiusError(502,'Музыкальный сервис временно недоступен.');
   commitCandidates(state);state.initialized=true;
@@ -185,7 +192,7 @@ export async function searchCatalogueAudius(env,{query,offset=0,count=20,session
   if(typeof query!=='string'||!query.trim()||query.length>200||!Number.isInteger(offset)||offset<0||offset>10000||!Number.isInteger(count)||count<1||count>100)throw new AudiusError(400,'Введите название трека или исполнителя (до 200 символов).');
   if(typeof refresh!=='boolean')throw new AudiusError(400,'Некорректный запрос.');
   query=query.trim().normalize('NFKC').replace(/\s+/g,' ');
-  const key=JSON.stringify([env.AUDIUS_API_KEY,query.toLowerCase()]);
+  const key=JSON.stringify([env.AUDIUS_API_KEY,query.toLowerCase(),env.WAVE_ARCHIVE_ENABLED==='1']);
   for(const state of sessions.values())if(state.expires<Date.now())removeState(state);
   let state=session?sessions.get(session):(refresh?null:cache.get(key));
   if(session&&(!state||state.key!==key))throw new AudiusError(409,'Результаты устарели. Повторите поиск.');

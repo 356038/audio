@@ -136,12 +136,14 @@ async function readTicket(env, value) {
 
 async function presentTrack(env,user,item,origin){
   const saved=Boolean(env.PERSONAL_STORE?.has(user,item.id));
-  if(item.source==='audius'||item.track_id){
+  if(item.source==='audius'||item.source==='archive'||item.track_id){
     const reference=registerAudiusTrack(user,item,env),audio={file_id:reference,mime_type:item.mime};
-    return {id:item.id,source:'audius',title:item.title,performer:item.performer,duration:item.duration,saved,version_labels:trackVersions(item),
+    const source=item.source==='archive'?'archive':'audius';
+    return {id:item.id,source,title:item.title,performer:item.performer,duration:item.duration,saved,version_labels:trackVersions(item),
+      ...(source==='archive'?{source_url:item.source_url,license_url:item.license_url}:{}),
       playable:item.playable,unavailable_reason:item.unavailable_reason,
-      stream_url:item.playable?`${origin}/api/stream?ticket=${encodeURIComponent(await ticketFor(env,user,audio,'audio','audius'))}`:null,
-      artwork_url:item.artwork_url?`${origin}/api/artwork?ticket=${encodeURIComponent(await ticketFor(env,user,audio,'artwork','audius'))}`:null};
+      stream_url:item.playable?`${origin}/api/stream?ticket=${encodeURIComponent(await ticketFor(env,user,audio,'audio',source))}`:null,
+      artwork_url:item.artwork_url?`${origin}/api/artwork?ticket=${encodeURIComponent(await ticketFor(env,user,audio,'artwork',source))}`:null};
   }
   const key=`${env.BOT_TOKEN}:${user}:${item.file_id}`;
   while(profileDescriptors.size>=6000)profileDescriptors.delete(profileDescriptors.keys().next().value);
@@ -156,7 +158,7 @@ async function descriptorFromRequest(env,user,raw,origin){
   if(link.origin!==origin||link.pathname!=='/api/stream')throw new ApiError(400,'Недействительная ссылка трека.');
   const ticket=await readTicket(env,link.searchParams.get('ticket'));
   if(ticket.user!==user||ticket.type!=='audio')throw new ApiError(403,'Нет доступа к этой композиции.');
-  if(ticket.source==='audius')return describeAudiusTrack(user,ticket,env);
+  if(ticket.source==='audius'||ticket.source==='archive')return describeAudiusTrack(user,ticket,env);
   if(ticket.source&&ticket.source!=='telegram')throw new ApiError(400,'Неизвестный источник.');
   const ref=profileDescriptors.get(`${env.BOT_TOKEN}:${user}:${ticket.file}`);
   if(!ref||ref.expires<Date.now())throw new ApiError(401,'Обновите коллекцию и попробуйте снова.');
@@ -233,7 +235,7 @@ async function route(request, env) {
     const prepare = url.pathname === '/api/prepare';
     const artwork = url.pathname === '/api/artwork';
     const ticket = await readTicket(env, url.searchParams.get('ticket'));
-    if(ticket.source==='audius')return serveAudiusMedia(request,env,ticket);
+    if(ticket.source==='audius'||ticket.source==='archive')return serveAudiusMedia(request,env,ticket);
     if ((ticket.type || 'audio') !== (artwork ? 'artwork' : 'audio')) throw new ApiError(401, 'Ссылка не подходит для этого файла.');
     const audioCache = artwork ? null : env.AUDIO_CACHE;
     const cacheKey = `${env.BOT_TOKEN}:${ticket.file}`;

@@ -26,7 +26,7 @@ function checkedUrl(raw){
 }
 // Pin each socket to DNS-validated public addresses. The Authorization header
 // is rebuilt for every hop and can never travel to a CDN host.
-function publicRequest(url,headers,signal){
+export function publicRequest(url,headers,signal){
   return new Promise((resolve,reject)=>{
     const req=https.get(url,{headers,signal,agent:publicAgent,lookup(host,options,callback){
       dns.lookup(host,{all:true},(error,addresses)=>{
@@ -137,11 +137,16 @@ export function registerAudiusTrack(user,track,env){
 export function describeAudiusTrack(user,ticket,env){
   const ref=references.get(ticket.file);
   if(!ref||ref.user!==user||ref.key!==env.AUDIUS_API_KEY||ref.exp<=Date.now())throw new AudiusError(401,'Результаты устарели. Повторите поиск.');
-  return {...ref.track,source:'audius'};
+  return {...ref.track,source:ref.track.source||'audius'};
 }
 export async function serveAudiusMedia(request,env,ticket){
-  configuration(env);const resource=references.get(ticket.file);
+  const resource=references.get(ticket.file);
   if(!resource||resource.user!==ticket.user||resource.key!==env.AUDIUS_API_KEY||resource.exp<=Date.now())throw new AudiusError(401,'Результаты устарели. Повторите поиск.');
+  if((resource.track.source||'audius')!==ticket.source)throw new AudiusError(401,'Недействительная ссылка.');
+  if(resource.track.source==='archive'){
+    const {serveArchiveMedia}=await import('./archive.mjs');return serveArchiveMedia(request,env,ticket,resource.track);
+  }
+  configuration(env);
   const path=new URL(request.url).pathname,artwork=path==='/api/artwork',prepare=path==='/api/prepare';
   if((ticket.type||'audio')!==(artwork?'artwork':'audio'))throw new AudiusError(401,'Недействительная ссылка.');
   const track=resource.track,range=request.headers.get('Range');

@@ -42,6 +42,18 @@ function versionLabel(track){
   return (Array.isArray(track.version_labels)?track.version_labels:[]).filter(code=>Object.hasOwn(labels,code)).map(code=>t(labels[code])).join(' · ');
 }
 function performerLabel(track,fallback){return [track.performer||t(fallback),versionLabel(track)].filter(Boolean).join(' · ');}
+function sourceCredit(track){
+  const credit=document.createElement('span');credit.className='catalogue-credit';
+  if(track.source!=='archive')return credit;
+  for(const [label,raw,host]of [['Internet Archive',track.source_url,'archive.org'],['CC',track.license_url,'creativecommons.org']]){
+    let url;try{url=new URL(raw);if(url.protocol!=='https:'||url.hostname!==host)continue;}catch{continue;}
+    const link=document.createElement('a');link.href=url.href;link.target='_blank';link.rel='noopener noreferrer';
+    const parts=url.pathname.split('/');link.textContent=label==='CC'?(parts[1]==='licenses'?`CC ${parts[2].toUpperCase()} ${parts[3]}`:'Public domain'):label;
+    link.onclick=event=>{event.stopPropagation();if(telegram?.openLink){event.preventDefault();telegram.openLink(url.href);}};
+    if(credit.childNodes.length)credit.append(document.createTextNode(' · '));credit.append(link);
+  }
+  return credit;
+}
 
 let actuallyPlaying = false;
 let selectionVersion=0, playAttempt=0, errorController=null;
@@ -132,11 +144,11 @@ function render() {
     toggle.disabled = !track.playable;
     toggle.onclick = () => sameTrack(track)&&!player.error ? togglePlayback() : select(index, true);
     const save=document.createElement('button');save.type='button';save.className='row-save icon-button';save.dataset.index=index;save.onclick=()=>saveTrack(track);
-    li.append(button, toggle,save); $('#tracks').append(li);renderSaveNotice(li,track);
+    li.append(button, toggle,save);if(track.source==='archive')li.append(sourceCredit(track));$('#tracks').append(li);renderSaveNotice(li,track);
   });
   $('#track-count').textContent = String(tracks.length);
   $('#empty-state').hidden = visibleCount > 0 || busy;
-  $('#empty-message').textContent = t(viewError || (view==='catalog' ? (libraries.catalog.loaded ? t(libraries.catalog.next!==null?'Поиск ещё не завершён. Нажмите «Загрузить ещё».':'В каталоге Audius ничего не найдено.') : t('Введи название трека или исполнителя.')) : query ? t('Ничего не нашлось. Попробуй другой запрос.') : view==='saved'?t('Пока нет треков.'):view==='for-you'?t('Пока нет рекомендаций.'):t('В профиле пока нет музыки.')));
+  $('#empty-message').textContent = t(viewError || (view==='catalog' ? (libraries.catalog.loaded ? t(libraries.catalog.next!==null?'Поиск ещё не завершён. Нажмите «Загрузить ещё».':'По этому запросу ничего не найдено.') : t('Введи название трека или исполнителя.')) : query ? t('Ничего не нашлось. Попробуй другой запрос.') : view==='saved'?t('Пока нет треков.'):view==='for-you'?t('Пока нет рекомендаций.'):t('В профиле пока нет музыки.')));
   $('#more').hidden = nextOffset === null||view==='for-you';
   $('#more').disabled = busy;
   $('#profile').disabled = busy;
@@ -242,8 +254,9 @@ function select(index, autoplay,collection=tracks) {
   setStatus(t('Загружаем трек…'));
   $('.player-dock').classList.add('has-track');
   $('#title').textContent = track.title; $('#performer').textContent = track.performer || t('Музыка профиля');
-  $('#full-queue-title').textContent=recommendationQueue?t('Для вас'):track.source==='audius'?t('Результаты поиска Audius'):t('Моя коллекция');
+  $('#full-queue-title').textContent=recommendationQueue?t('Для вас'):['audius','archive'].includes(track.source)?t('Результаты поиска'):t('Моя коллекция');
   $('#full-title').textContent = track.title; $('#full-performer').textContent = performerLabel(track,'Неизвестный исполнитель');
+  $('#full-source').replaceChildren(sourceCredit(track));$('#full-source').hidden=track.source!=='archive';
   $('.now-art').querySelectorAll('img').forEach(image=>image.remove()); $('.now-art').classList.remove('has-artwork');
   $('#full-artwork').querySelectorAll('img').forEach(image=>image.remove()); $('#full-artwork').classList.remove('has-artwork');
   addArtwork($('.now-art'), track);
@@ -328,7 +341,7 @@ function setLibraryStatus(message=''){
 function updateViewLabels(){
   $('#library-title').textContent=viewNames[view];
   $('#search').placeholder=view==='catalog'?t('Название трека или исполнитель'):t('Трек или исполнитель');
-  $('#search').setAttribute('aria-label',view==='catalog'?t('Поиск музыки в Audius'):t('Поиск по загруженной музыке'));
+  $('#search').setAttribute('aria-label',view==='catalog'?t('Поиск музыки'):t('Поиск по загруженной музыке'));
   $('#search-submit').hidden=view!=='catalog';
   $('#search-form').hidden=view==='for-you';
   for(const name of Object.keys(libraries))$('#tab-'+name).setAttribute('aria-selected',String(view===name));
@@ -678,7 +691,7 @@ $('#language-choice').onchange=()=>{
   WaveI18n.localizeDocument(language,document);viewNames=translatedViewNames();updateViewLabels();viewError=t(viewError);render();setStatus(previousStatus);setLibraryStatus(previousLibraryStatus);
   $('#account-status').textContent=t($('#account-status').textContent);$('#toast').textContent=t($('#toast').textContent);
   if(accountSavedCount!==null)$('#account-saved').textContent=t('Сохранено треков: {count}',{count:accountSavedCount});
-  if(selectedTrack()){$('#performer').textContent=selectedTrack().performer||t('Музыка профиля');$('#full-performer').textContent=performerLabel(selectedTrack(),'Неизвестный исполнитель');$('#full-queue-title').textContent=recommendationQueue?t('Для вас'):selectedTrack().source==='audius'?t('Результаты поиска Audius'):t('Моя коллекция');}
+  if(selectedTrack()){$('#performer').textContent=selectedTrack().performer||t('Музыка профиля');$('#full-performer').textContent=performerLabel(selectedTrack(),'Неизвестный исполнитель');$('#full-queue-title').textContent=recommendationQueue?t('Для вас'):['audius','archive'].includes(selectedTrack().source)?t('Результаты поиска'):t('Моя коллекция');}
   $('#hero-pause').setAttribute('aria-label',t(heroPaused?'Продолжить карточки':'Приостановить карточки'));
   const clone=heroSlides[0].cloneNode(true);heroClone.replaceChildren(...clone.childNodes);heroClone.inert=true;heroClone.querySelectorAll('button').forEach(button=>button.tabIndex=-1);
 };
