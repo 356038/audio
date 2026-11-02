@@ -4,7 +4,7 @@ import {isIP} from 'node:net';
 import {Readable} from 'node:stream';
 
 export class AudiusError extends Error {
-  constructor(status,message){super(message);this.status=status;}
+  constructor(status,message,{code=null,upstreamStatus=null}={}){super(message);this.status=status;this.code=code;this.upstreamStatus=upstreamStatus;}
 }
 const API='https://api.audius.co';
 const publicAgent=new https.Agent({keepAlive:true,maxSockets:16,maxFreeSockets:4,timeout:30000});
@@ -41,7 +41,7 @@ function publicRequest(url,headers,signal){
         resolve(new Response(empty?null:Readable.toWeb(incoming),{status:incoming.statusCode,headers:out}));
       }catch{incoming.destroy();reject(new AudiusError(502,'Музыкальный сервис вернул некорректный ответ.'));}
     });
-    req.on('error',()=>reject(new AudiusError(502,'Не удалось связаться с музыкальным сервисом.')));
+    req.on('error',()=>reject(new AudiusError(502,'Не удалось связаться с музыкальным сервисом.',{code:signal.aborted?'timeout':'network'})));
   });
 }
 export async function audiusFetch(raw,options={},env={}){
@@ -68,21 +68,27 @@ export async function audiusFetch(raw,options={},env={}){
 }
 function apiUrl(env,path,params={}){const url=new URL(API+'/v1'+path);url.search=new URLSearchParams({app_name:'WAVE',api_key:env.AUDIUS_API_KEY,...params});return url.href;}
 function upstreamError(status){
-  if([401,403].includes(status))return new AudiusError(503,'Музыкальный сервис отклонил подключение. Нужно проверить ключи и доступ.');
-  if(status===429)return new AudiusError(429,'Достигнут лимит поиска. Попробуйте немного позже.');
-  return new AudiusError(502,'Музыкальный сервис временно недоступен.');
+  const detail={code:'http_error',upstreamStatus:status};
+  if([401,403].includes(status))return new AudiusError(503,'Музыкальный сервис отклонил подключение. Нужно проверить ключи и доступ.',detail);
+  if(status===429)return new AudiusError(429,'Достигнут лимит поиска. Попробуйте немного позже.',detail);
+  return new AudiusError(502,'Музыкальный сервис временно недоступен.',detail);
 }
 async function dataResult(env,path,params){
   configuration(env);
   const response=await audiusFetch(apiUrl(env,path,params),{signal:env.AUDIUS_SEARCH_SIGNAL instanceof AbortSignal?env.AUDIUS_SEARCH_SIGNAL:undefined},env);
   if(!response.ok){await response.body?.cancel();throw upstreamError(response.status);}
-  let result;try{const raw=await response.text();if(raw.length>2*1024*1024)throw Error();result=JSON.parse(raw);}catch{throw new AudiusError(502,'Не удалось прочитать результаты поиска.');}
-  if(!result||typeof result!=='object')throw new AudiusError(502,'Сервис вернул некорректные результаты.');
+  // Bound bytes while reading, rather than buffering an arbitrarily large response.
+  const reader=response.body?.getReader(),decoder=new TextDecoder();let raw='',bytes=0;
+  try{if(reader)for(;;){const {value,done}=await reader.read();if(done)break;bytes+=value.byteLength;if(bytes>2*1024*1024){await reader.cancel();throw new AudiusError(502,'Слишком большой ответ поиска.',{code:'response_too_large'});}raw+=decoder.decode(value,{stream:true});}raw+=decoder.decode();}
+  catch(error){if(error instanceof AudiusError)throw error;throw new AudiusError(502,'Не удалось прочитать результаты поиска.',{code:env.AUDIUS_SEARCH_SIGNAL?.aborted?'timeout':'response_interrupted'});}
+  finally{reader?.releaseLock();}
+  let result;try{result=JSON.parse(raw);}catch{throw new AudiusError(502,'Не удалось прочитать результаты поиска.',{code:'invalid_json'});}
+  if(!result||typeof result!=='object')throw new AudiusError(502,'Сервис вернул некорректные результаты.',{code:'invalid_shape'});
   return result;
 }
 async function dataList(env,path,params){
   const result=await dataResult(env,path,params);
-  if(!Array.isArray(result.data))throw new AudiusError(502,'Сервис вернул некорректные результаты.');
+  if(!Array.isArray(result.data))throw new AudiusError(502,'Сервис вернул некорректные результаты.',{code:'invalid_shape'});
   return result;
 }
 function normalizeTracks(data,count){
@@ -90,7 +96,8 @@ function normalizeTracks(data,count){
     const gated=Boolean(t.is_stream_gated),playable=!gated&&t.is_streamable!==false;
     let artwork=null;for(const key of ['480x480','150x150','1000x1000']){try{if(t.artwork?.[key]){artwork=checkedUrl(t.artwork[key]).href;break;}}catch{}}
     const tags=typeof t.tags==='string'?[...new Set(t.tags.split(',').map(tag=>tag.trim().toLowerCase().slice(0,64)).filter(Boolean))].slice(0,20):[];
-    return {id:'audius:'+t.id,track_id:t.id,artist_id:typeof t.user?.id==='string'?t.user.id:null,artist_handle:typeof t.user?.handle==='string'?t.user.handle:'',verified:Boolean(t.user?.is_verified),title:typeof t.title==='string'?t.title.slice(0,1000):'Без названия',performer:typeof t.user?.name==='string'?t.user.name.slice(0,1000):'',genre:typeof t.genre==='string'?t.genre.slice(0,100):'',mood:typeof t.mood==='string'?t.mood.slice(0,100):'',tags,bpm:Number.isFinite(t.bpm)&&t.bpm>=30&&t.bpm<=300?t.bpm:null,duration:Number.isFinite(t.duration)?Math.max(0,t.duration):0,playable,unavailable_reason:playable?null:gated?'Трек требует отдельного доступа в Audius.':'Трек недоступен для воспроизведения.',artwork_url:artwork,mime:'audio/mpeg'};
+    const artistNames=[...new Set([t.user?.name,...(Array.isArray(t.collaborators)?t.collaborators.slice(0,10).map(user=>user?.name):[])].filter(name=>typeof name==='string'&&name.trim()).map(name=>name.slice(0,200)))];
+    return {id:'audius:'+t.id,track_id:t.id,artist_id:typeof t.user?.id==='string'?t.user.id:null,artist_handle:typeof t.user?.handle==='string'?t.user.handle:'',artist_names:artistNames,verified:Boolean(t.user?.is_verified),play_count:Number.isFinite(t.play_count)?Math.max(0,t.play_count):0,title:typeof t.title==='string'?t.title.slice(0,1000):'Без названия',performer:artistNames.join(', ').slice(0,1000),genre:typeof t.genre==='string'?t.genre.slice(0,100):'',mood:typeof t.mood==='string'?t.mood.slice(0,100):'',tags,bpm:Number.isFinite(t.bpm)&&t.bpm>=30&&t.bpm<=300?t.bpm:null,duration:Number.isFinite(t.duration)?Math.max(0,t.duration):0,playable,unavailable_reason:playable?null:gated?'Трек требует отдельного доступа в Audius.':'Трек недоступен для воспроизведения.',artwork_url:artwork,mime:'audio/mpeg'};
   });
 }
 async function trackList(env,path,params,count){
@@ -105,9 +112,11 @@ export async function searchAudius(env,{query,offset=0,count=20}={}){
   const result=await trackList(env,'/tracks/search',{query:query.trim(),limit:String(count),offset:String(offset)},count);
   return {items:result.items,total_count:result.total_count,received:result.received,next_offset:result.received>=count?offset+result.received:null};
 }
-export async function searchFullAudius(env,{query,offset=0,count=40}){
-  const result=await dataResult(env,'/search/full',{query,kind:'all',sort_method:'relevant',limit:String(count),offset:String(offset)});
-  if(!Array.isArray(result.data?.tracks))throw new AudiusError(502,'Сервис вернул некорректные результаты.');
+export async function searchFullAudius(env,{query,offset=0,count=40,sort='relevant'}){
+  // WAVE needs tracks only. Requesting all kinds also loads unused albums,
+  // playlists and profiles, which can make common-word searches much heavier.
+  const result=await dataResult(env,'/search/full',{query,kind:'tracks',sort_method:sort,limit:String(count),offset:String(offset)});
+  if(!Array.isArray(result.data?.tracks))throw new AudiusError(502,'Сервис вернул некорректные результаты.',{code:'invalid_shape'});
   return {items:normalizeTracks(result.data.tracks,count),users:Array.isArray(result.data.users)?result.data.users:[],received:result.data.tracks.length};
 }
 export async function searchAudiusUsers(env,query){return (await dataList(env,'/users/search',{query,limit:'15'})).data;}

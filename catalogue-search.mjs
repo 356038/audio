@@ -39,16 +39,23 @@ function score(entry,state){
   const {track}=entry;let artist=0,title=0,combined=0;
   for(const [i,variant]of (state.artistQuery?searchVariants(state.artistQuery):state.variants).entries()){
     const weight=i===0?1:.85;
-    artist=Math.max(artist,weight*Math.max(nameMatch(track.performer,variant),nameMatch(track.artist_handle,variant)));
+    artist=Math.max(artist,weight*Math.max(...(track.artist_names||[track.performer]).map(name=>nameMatch(name,variant)),nameMatch(track.artist_handle,variant)));
     title=Math.max(title,weight*fraction(track.title,variant));combined=Math.max(combined,weight*fraction(`${track.performer} ${track.title}`,variant));
   }
   if(state.titleQuery&&fraction(track.title,state.titleQuery)<.75)return -1;
   if(!entry.global&&artist===0&&combined<.85)return -1;
-  return (track.playable?1000:0)+artist*30+title*18+(title===1?5:0)+combined*12+(track.verified?3:0);
+  // A matching uploader name is evidence of a name match, not artist identity.
+  // Do not let generic uploads such as "1sound" dominate an artist query.
+  const generic=/^(?:\d+[\s._-]*)?(?:sound(?:s|ess)?|audio|track|test|untitled|recording|voice)(?:[\s._-]*\d+)?$/i.test(track.title.trim());
+  const prefix=track.title.replaceAll('_',' ').match(/^(.{1,100}?)\s*[-–—]\s*\S/);
+  const embeddedArtist=prefix?Math.max(...state.variants.map(variant=>nameMatch(prefix[1],variant))):0;
+  const popularity=Math.min(12,Math.log10(1+(track.play_count||0))*2);
+  const relevance=artist*30*(track.verified?1:.6)+title*18+(title===1?5:0)+combined*12+(track.verified?3:0)+embeddedArtist*16+popularity-(generic&&title<1?100:0);
+  return (track.playable?1000:0)+Math.max(0,relevance);
 }
 function addSource(state,kind,query,id=null){
   if(state.sources.some(source=>source.kind===kind&&source.query===query&&source.id===id))return;
-  state.sources.push({kind,query,id,offset:0,done:false,failures:0});
+  state.sources.push({kind,query,id,offset:0,done:false,failures:0,error:null,retries:0});
 }
 function artistHints(state){
   const explicit=state.query.split(/\s+[—–-]\s+/);if(explicit.length>1){state.artistQuery=explicit[0];state.titleQuery=explicit.slice(1).join(' ');return [explicit[0],...state.variants];}
@@ -67,23 +74,31 @@ function addCandidates(state,items,global){
     const old=state.candidates.get(track.id);
     if(!old)state.candidates.set(track.id,{track,global,order:state.sequence++});else if(global)old.global=true;
   }
-  collectArtists(state,items.filter(track=>track.artist_id).map(track=>({id:track.artist_id,name:track.performer,handle:track.artist_handle,is_verified:track.verified})));
+  collectArtists(state,items.filter(track=>track.artist_id).map(track=>({id:track.artist_id,name:track.artist_names?.[0]||track.performer,handle:track.artist_handle,is_verified:track.verified})));
 }
 async function readSource(env,state,source){
   try{
     let items,received;
-    if(source.kind==='full'){
-      const result=await searchFullAudius(env,{query:source.query,offset:source.offset,count:PAGE});items=result.items;received=result.received;collectArtists(state,result.users);
+    if(source.kind==='full'||source.kind==='popular'){
+      let result;
+      try{result=await searchFullAudius(env,{query:source.query,offset:source.offset,count:PAGE,sort:source.kind==='popular'?'popular':'relevant'});}
+      catch(error){
+        if(![502,503,504].includes(error.upstreamStatus)||env.AUDIUS_SEARCH_SIGNAL?.aborted)throw error;
+        // One idempotent retry for a transient gateway failure; never retry 403/429.
+        source.retries++;result=await searchFullAudius(env,{query:source.query,offset:source.offset,count:PAGE,sort:source.kind==='popular'?'popular':'relevant'});
+      }
+      items=result.items;received=result.received;collectArtists(state,result.users);
     }else if(source.kind==='artist'){
       const result=await artistCatalogueAudius(env,source.id,{offset:source.offset,count:PAGE});items=result.items.filter(track=>track.artist_id?track.artist_id===source.id:state.hints.some(hint=>nameMatch(track.performer,hint)>0));received=result.received;
     }else{
       const result=await searchAudius(env,{query:source.query,offset:source.offset,count:PAGE});items=result.items;received=result.received??(result.next_offset===null?items.length:result.next_offset-source.offset);
     }
-    state.successes++;source.offset+=received;source.done=received<PAGE;source.failures=0;
+    state.successes++;source.offset+=received;source.done=received<PAGE;source.failures=0;source.error=null;
     addCandidates(state,items,source.kind!=='artist');
     state.rows[source.kind]=(state.rows[source.kind]||0)+received;
   }catch(error){
     source.failures++;state.lastError=error;
+    source.error={code:error.code||'unclassified',http_status:error.upstreamStatus||null};
     // Full search is optional on older deployments. Other sources stay usable.
     if(source.offset===0||source.failures>=2)source.done=true;
   }
@@ -99,21 +114,33 @@ function commitCandidates(state){
   state.candidates.clear();
 }
 function requestEnv(env){const local=AbortSignal.timeout(7000);return {...env,AUDIUS_SEARCH_SIGNAL:env.AUDIUS_SEARCH_SIGNAL instanceof AbortSignal?AbortSignal.any([env.AUDIUS_SEARCH_SIGNAL,local]):local};}
+async function lookupArtists(env,state,query){
+  try{collectArtists(state,await searchAudiusUsers(requestEnv(env),query));}
+  catch(error){state.lastError=error;state.lookupErrors.push({query,code:error.code||'unclassified',http_status:error.upstreamStatus||null});}
+}
 async function initialize(env,state){
-  const limited=requestEnv(env);
   addSource(state,'full',state.query);addSource(state,'legacy',state.query);
   await Promise.all([
-    ...state.sources.map(source=>readSource(limited,state,source)),
-    searchAudiusUsers(limited,state.titleQuery?state.hints[0]:state.query).then(users=>{collectArtists(state,users);}).catch(error=>{state.lastError=error;}),
+    ...state.sources.map(source=>readSource(requestEnv(env),state,source)),
+    lookupArtists(env,state,state.titleQuery?state.hints[0]:state.query),
   ]);
-  await readArtists(limited,state);
+  await readArtists(requestEnv(env),state);
+  // Ambiguous names benefit from a popularity-ranked page, which is merged
+  // with relevance results instead of allowing a low-quality namesake to win.
+  if(state.sources.some(source=>source.kind==='legacy'&&source.offset>=PAGE)){
+    addSource(state,'popular',state.query);
+    await readSource(requestEnv(env),state,state.sources.find(source=>source.kind==='popular'));
+  }
   // Broaden sparse results and Cyrillic artist names; never substitute another catalogue.
   if(state.candidates.size<20||/[а-яё]/i.test(state.query)){
     for(const variant of state.variants.slice(1)){
       addSource(state,'full',variant);addSource(state,'legacy',variant);
-      await Promise.all(state.sources.filter(source=>source.query===variant&&source.offset===0&&!source.done).map(source=>readSource(limited,state,source)));
+      await Promise.all([
+        ...state.sources.filter(source=>source.query===variant&&source.offset===0&&!source.done).map(source=>readSource(requestEnv(env),state,source)),
+        lookupArtists(env,state,variant),
+      ]);
     }
-    await readArtists(limited,state);
+    await readArtists(requestEnv(env),state);
   }
   if(!state.successes)throw state.lastError||new AudiusError(502,'Музыкальный сервис временно недоступен.');
   commitCandidates(state);state.initialized=true;
@@ -143,11 +170,12 @@ export async function searchCatalogueAudius(env,{query,offset=0,count=20,session
   if(session&&(!state||state.key!==key))throw new AudiusError(409,'Результаты устарели. Повторите поиск.');
   if(!state){
     while(sessions.size>=64)removeState(sessions.values().next().value);
-    state={key,id:crypto.randomUUID(),query,variants:searchVariants(query),artists:new Map(),sources:[],candidates:new Map(),items:[],seen:new Set(),successes:0,sequence:0,rows:{},expires:Date.now()+TTL,initialized:false,pending:null};
+    state={key,id:crypto.randomUUID(),query,variants:searchVariants(query),artists:new Map(),sources:[],lookupErrors:[],candidates:new Map(),items:[],seen:new Set(),successes:0,sequence:0,rows:{},expires:Date.now()+TTL,initialized:false,pending:null};
     state.hints=artistHints(state);cache.set(key,state);sessions.set(state.id,state);
   }
   try{await ensureResults(env,state,offset+count);}catch(error){removeState(state);throw error;}
   state.expires=Date.now()+(state.items.length?TTL:15000);
   const items=state.items.slice(offset,offset+count),hasMore=offset+items.length<state.items.length||state.items.length<MAX_RESULTS&&state.sources.some(source=>!source.done);
-  return {items,total_count:null,next_offset:items.length&&hasMore?offset+items.length:null,search_session:state.id,diagnostics:{variants:state.variants,rows:state.rows,artists:state.artists.size,candidates:state.items.length,partial:state.sources.some(source=>source.failures>0)}};
+  const sources=state.sources.map(source=>({kind:source.kind,query:source.query,rows:source.offset,retries:source.retries,error:source.error}));
+  return {items,total_count:null,next_offset:items.length&&hasMore?offset+items.length:null,search_session:state.id,diagnostics:{variants:state.variants,rows:state.rows,artists:state.artists.size,candidates:state.items.length,partial:sources.some(source=>source.error)||state.lookupErrors.length>0,sources,user_errors:state.lookupErrors}};
 }

@@ -19,8 +19,11 @@ else for(const query of queries.slice(0,5)){
     console.log('Варианты:',result.diagnostics.variants.map(safe).join(' / '));
     console.log('Получено строк по источникам:',JSON.stringify(result.diagnostics.rows));
     console.log('Часть источников недоступна:',result.diagnostics.partial?'да':'нет');
+    for(const source of result.diagnostics.sources)if(source.error||source.retries)console.log('Диагностика источника:',JSON.stringify({source:source.kind,query:safe(source.query),rows:source.rows,retries:source.retries,error:source.error}));
+    for(const error of result.diagnostics.user_errors)console.log('Диагностика поиска профилей:',JSON.stringify({...error,query:safe(error.query)}));
     console.log('Время:',Math.round(performance.now()-start),'мс');
-    for(const track of result.items.slice(0,5))console.log(JSON.stringify({artist:safe(track.performer),title:safe(track.title),playable:track.playable}));
+    for(const track of result.items.slice(0,10))console.log(JSON.stringify({artist:safe(track.performer),title:safe(track.title),playable:track.playable,duration:track.duration,plays:track.play_count,profile_id:safe(track.artist_id),profile_verified:track.verified}));
+    console.log('Имя и отметка профиля Audius не подтверждают принадлежность записи известной группе.');
     if(!result.items.length)console.log('В ответивших индексах Audius нет результатов. Улучшение поиска не добавляет отсутствующие записи в каталог.');
   }catch(error){console.log('Проверка поиска не завершена:',safe(error.message));process.exitCode=1;}
 }

@@ -64,3 +64,16 @@ SDK-documented `/search/full` endpoint and falls back to other indices when
 unavailable. Catalogue snapshots preserve pagination order; matching artist
 catalogues are no longer truncated at 40 tracks. Transliteration and fuzzy
 matching improve retrieval, not the provider's actual catalogue coverage.
+
+Full-index requests use `kind=tracks` instead of loading unused entity kinds.
+Common queries merge relevance and popularity results; generic namesake uploads
+are downranked and accepted collaborators are included in name matching. Neither
+a matching profile name nor verification establishes that a recording belongs
+to the famous artist of that name. Provider titles and uploader names remain
+visible, including cover/remix labels.
+
+Diagnostics report each failed source's HTTP status or a fixed parse/size/timeout
+code, never provider response bodies. Only transient 502/503/504 responses receive
+one retry; auth failures and rate limits do not. Responses are capped at 2 MiB
+while reading, with cancellation on overflow. Live Queen/Король и Шут coverage
+still requires this VPS probe; controlled tests do not establish catalogue coverage.
