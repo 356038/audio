@@ -131,7 +131,7 @@ function render() {
   });
   $('#track-count').textContent = String(tracks.length);
   $('#empty-state').hidden = visibleCount > 0 || busy;
-  $('#empty-message').textContent = t(viewError || (view==='catalog' ? (libraries.catalog.loaded ? t('По этому запросу ничего не найдено.') : t('Введи название трека или исполнителя.')) : query ? t('Ничего не нашлось. Попробуй другой запрос.') : view==='saved'?t('Пока нет треков.'):view==='for-you'?t('Пока нет рекомендаций.'):t('В профиле пока нет музыки.')));
+  $('#empty-message').textContent = t(viewError || (view==='catalog' ? (libraries.catalog.loaded ? t('В каталоге Audius ничего не найдено.') : t('Введи название трека или исполнителя.')) : query ? t('Ничего не нашлось. Попробуй другой запрос.') : view==='saved'?t('Пока нет треков.'):view==='for-you'?t('Пока нет рекомендаций.'):t('В профиле пока нет музыки.')));
   $('#more').hidden = nextOffset === null||view==='for-you';
   $('#more').disabled = busy;
   $('#profile').disabled = busy;
@@ -345,20 +345,20 @@ async function loadLibrary(source,append=false,{refresh=false}={}) {
   cancelRequests();viewError='';
   const version=requestVersion,controller=new AbortController();requestController=controller;
   const previous=libraries[source];
-  const refreshData=source==='for-you'&&refresh?{refresh:true,previous_feed:previous.feed||null,exclude_ids:previous.tracks.slice(-300).map(track=>track.id)}:{};
+  const refreshData=source==='catalog'&&refresh?{refresh:true}:source==='for-you'&&refresh?{refresh:true,previous_feed:previous.feed||null,exclude_ids:previous.tracks.slice(-300).map(track=>track.id)}:{};
   const library=append?previous:{...previous,tracks:[],next:null,loaded:false,query:source==='catalog'?query:$('#search').value};
   if(!apiBase||!telegram?.initData){viewError=!apiBase?t('Сервис пока недоступен.'):t('Откройте WAVE кнопкой приложения у @wave_audio_player_bot.');setLibraryStatus(viewError);render();return;}
   busy=true;render();setLibraryStatus(previous.loaded&&tracks.length?'':source==='catalog'?t('Ищем…'):t('Загружаем…'));
   const timer=setTimeout(()=>controller.abort(),30000);
   try {
     const endpoints={catalog:'/api/search',profile:'/api/profile-audios',saved:'/api/library','for-you':'/api/recommendations'};
-    const response=await fetch(`${apiBase}${endpoints[source]}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({init_data:telegram.initData,offset:append?library.next:0,...(source==='catalog'?{query}:{}),...refreshData}),signal:controller.signal});
+    const response=await fetch(`${apiBase}${endpoints[source]}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({init_data:telegram.initData,offset:append?library.next:0,...(source==='catalog'?{query,...(append?{search_session:library.searchSession}:{} )}:{}),...refreshData}),signal:controller.signal});
     const result=await response.json();
     if(!response.ok)throw new Error(result.error||t('Не удалось загрузить музыку.'));
     if(!Array.isArray(result.tracks))throw new Error(t('Не удалось прочитать результаты.'));
     if(version!==requestVersion)return;
     if(!append)libraries[source]=library;
-    library.tracks.push(...result.tracks);library.next=result.next_offset;library.total=result.total_count;library.feed=result.feed_id||null;library.loaded=true;library.stale=false;
+    library.tracks.push(...result.tracks);library.next=result.next_offset;library.total=result.total_count;library.feed=result.feed_id||null;library.searchSession=result.search_session||null;library.loaded=true;library.stale=false;
     library.reason=result.reason||'';
     if(Array.isArray(result.saved_ids)){savedIds.clear();result.saved_ids.forEach(id=>savedIds.add(id));}
     for(const track of result.tracks)if(typeof track.saved==='boolean'){if(track.saved)savedIds.add(track.id);else savedIds.delete(track.id);}
@@ -375,7 +375,7 @@ async function loadLibrary(source,append=false,{refresh=false}={}) {
 }
 function loadProfile(append=false){return loadLibrary('profile',append);}
 function loadSearch(append=false){return loadLibrary('catalog',append);}
-$('#profile').onclick=()=>loadLibrary(view,false,{refresh:view==='for-you'});
+$('#profile').onclick=()=>loadLibrary(view,false,{refresh:view==='for-you'||view==='catalog'});
 for(const name of Object.keys(libraries))$('#tab-'+name).onclick=()=>switchView(name);
 
 $('#search-form').onsubmit=event=>{event.preventDefault();$('#search').blur();if(view==='catalog')loadSearch();};

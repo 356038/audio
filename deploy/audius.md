@@ -50,3 +50,17 @@ node tests/http.test.mjs
 Automated network tests use controlled responses. Live credentials are not in
 the repository. The read-only `scripts/check-audius.py` can separately verify
 credentials and initial audio bytes without saving keys.
+
+## Search coverage diagnostics
+
+```sh
+node --env-file=/etc/wave.env scripts/check-search.mjs "король и шут" queen
+```
+
+Run on the VPS as root. This reads the existing configuration without writing
+it, compares the legacy first page with the merged search and shows safe source
+counts. It does not print credentials or stream URLs. Full search uses the
+SDK-documented `/search/full` endpoint and falls back to other indices when
+unavailable. Catalogue snapshots preserve pagination order; matching artist
+catalogues are no longer truncated at 40 tracks. Transliteration and fuzzy
+matching improve retrieval, not the provider's actual catalogue coverage.

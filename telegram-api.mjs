@@ -1,5 +1,6 @@
 // Telegram API service. BOT_TOKEN is a server secret, never a browser setting.
-import {searchCatalogueAudius,AudiusError,registerAudiusTrack,serveAudiusMedia,describeAudiusTrack} from './audius.mjs';
+import {AudiusError,registerAudiusTrack,serveAudiusMedia,describeAudiusTrack} from './audius.mjs';
+import {searchCatalogueAudius} from './catalogue-search.mjs';
 import {recommendations} from './recommendations.mjs';
 const encoder = new TextEncoder();
 const MAX_FILE = 20 * 1024 * 1024;
@@ -197,9 +198,9 @@ async function route(request, env) {
     const text=await request.text();if(text.length>20000)throw new ApiError(413,'Слишком большой запрос.');
     let body;try{body=JSON.parse(text);}catch{throw new ApiError(400,'Некорректный запрос.');}
     const user=await authenticate(body?.init_data,env.BOT_TOKEN);
-    const result=await searchCatalogueAudius(env,{query:body.query,offset:body.offset??0,count:20});
+    const result=await searchCatalogueAudius(env,{query:body.query,offset:body.offset??0,count:20,session:body.search_session??null,refresh:body.refresh??false});
     const tracks=await Promise.all(result.items.map(item=>presentTrack(env,user.id,item,url.origin)));
-    return Response.json({tracks,total_count:result.total_count,next_offset:result.next_offset});
+    return Response.json({tracks,total_count:result.total_count,next_offset:result.next_offset,search_session:result.search_session});
   }
   if (url.pathname === '/api/profile-audios' && request.method === 'POST') {
     const bodyText = await request.text();

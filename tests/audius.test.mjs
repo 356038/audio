@@ -2,7 +2,8 @@ import test,{afterEach} from 'node:test';
 import assert from 'node:assert/strict';
 import {createHmac} from 'node:crypto';
 import api from '../telegram-api.mjs';
-import {searchAudius,searchCatalogueAudius,clearArtistSearchCache,genreAudius,audiusFetch,isPublicAddress} from '../audius.mjs';
+import {searchAudius,genreAudius,audiusFetch,isPublicAddress} from '../audius.mjs';
+import {searchCatalogueAudius,clearArtistSearchCache} from '../catalogue-search.mjs';
 const base='https://wave.example',bot='123:bot-test-only';
 const basic={BOT_TOKEN:bot,AUDIUS_API_KEY:'public-fixture',AUDIUS_BEARER_TOKEN:'bearer-fixture'};
 const song={id:'Ab12',title:'Fixture track',duration:42,user:{name:'Fixture artist'},is_streamable:true,is_stream_gated:false};
@@ -14,6 +15,7 @@ afterEach(clearArtistSearchCache);
 test('authorized search returns opaque playable URLs and honest unavailable tracks',async()=>{
  const env={...basic,AUDIUS_HTTP:async(url,headers)=>{
   if(url.pathname==='/v1/users/search')return ok([]);
+  if(url.pathname==='/v1/search/full')return Response.json({data:{tracks:[],users:[]}});
   assert.equal(url.hostname,'api.audius.co');assert.equal(url.pathname,'/v1/tracks/search');assert.equal(url.searchParams.get('query'),'electronic');
   assert.equal(new Headers(headers).get('Authorization'),'Bearer '+basic.AUDIUS_BEARER_TOKEN);
   return ok([song,{...song,id:'Cd34',is_stream_gated:true},{...song,id:'Ef56',is_streamable:false}]);
@@ -53,6 +55,7 @@ test('redirects never receive the bearer token, and private targets are rejected
 test('audio bytes, MIME and ranges are preserved and credentials never leave the server',async()=>{
  const seen=[];const env={...basic,AUDIUS_HTTP:async(url,headers)=>{
   if(url.pathname==='/v1/users/search')return ok([]);
+  if(url.pathname==='/v1/search/full')return Response.json({data:{tracks:[],users:[]}});
   if(url.pathname.endsWith('/search'))return ok([song]);
   seen.push(new Headers(headers));return new Response(new Uint8Array([7,8]),{status:206,headers:{'Content-Type':'application/octet-stream','Content-Range':'bytes 0-1/200','Content-Length':'2'}});
  }};
@@ -89,12 +92,13 @@ test('artist catalogue precedes title matches and pagination neither repeats nor
  const own=Array.from({length:4},(_,i)=>({...song,id:'Q'+i,title:'Different title '+i,user:{id:'Qx',name:'Queen',handle:'queen'}}));
  const titles=[...own,{...song,id:'T1',title:'Queen of hearts'},{...song,id:'T2',title:'Queen of the night'}];
  const env={...basic,AUDIUS_HTTP:async url=>{
+  if(url.pathname==='/v1/search/full')return Response.json({data:{tracks:[],users:[]}});
   if(url.pathname==='/v1/users/search'){lookups++;return ok([{id:'Nx',name:'Unrelated artist'},{id:'Qx',name:'Queen',handle:'queen',is_verified:true}]);}
   if(url.pathname==='/v1/users/Qx/tracks')return ok(own);
   assert.equal(url.pathname,'/v1/tracks/search');titleCalls++;assert.equal(url.searchParams.get('query'),'Queen');
   return ok(titles.slice(Number(url.searchParams.get('offset'))));
  }};
- const first=await searchCatalogueAudius(env,{query:'Queen',count:2});assert.deepEqual(first.items.map(t=>t.id),['audius:Q0','audius:Q1']);assert.equal(titleCalls,0);
+ const first=await searchCatalogueAudius(env,{query:'Queen',count:2});assert.deepEqual(first.items.map(t=>t.id),['audius:Q0','audius:Q1']);assert.equal(titleCalls,1);
  const second=await searchCatalogueAudius(env,{query:'Queen',count:2,offset:first.next_offset});
  const third=await searchCatalogueAudius(env,{query:'Queen',count:2,offset:second.next_offset});
  assert.deepEqual([...first.items,...second.items,...third.items].map(t=>t.id),['audius:Q0','audius:Q1','audius:Q2','audius:Q3','audius:T1','audius:T2']);
@@ -110,4 +114,79 @@ test('track fallback ranks actual performer matches ahead of title-only results 
   }};
   const result=await searchCatalogueAudius(env,{query:'queen'});assert.deepEqual(result.items.map(t=>t.id),['audius:Q1','audius:T1']);assert.equal(result.next_offset,null);
  }
+});
+
+test('full search contributes tracks missing from the legacy index, and duplicates are merged',async()=>{
+ const env={...basic,AUDIUS_HTTP:async url=>{
+  if(url.pathname==='/v1/search/full'){assert.equal(url.searchParams.get('kind'),'all');assert.equal(url.searchParams.get('sort_method'),'relevant');return Response.json({data:{users:[],tracks:[{...song,id:'Modern',title:'Queen — Live'}]}});}
+  if(url.pathname==='/v1/users/search')return ok([]);
+  return ok([{...song,id:'Modern',title:'Queen — Live'},{...song,id:'Legacy',title:'Queen — Studio'}]);
+ }};
+ const result=await searchCatalogueAudius(env,{query:'Queen'});assert.equal(result.items.length,2);assert.equal(new Set(result.items.map(t=>t.id)).size,2);assert.ok(result.diagnostics.rows.full>0);assert.ok(result.diagnostics.rows.legacy>0);
+});
+
+test('Король и Шут searches Cyrillic, transliteration and the familiar abbreviation',async()=>{
+ const queries=[];
+ const env={...basic,AUDIUS_HTTP:async url=>{
+  queries.push(url.searchParams.get('query'));
+  if(url.pathname==='/v1/users/search')return ok([]);
+  if(url.pathname==='/v1/search/full')return Response.json({data:{tracks:[],users:url.searchParams.get('query')==='korol i shut'?[{id:'Kx',name:"Korol' i Shut"}]:[]}});
+  if(url.pathname==='/v1/users/Kx/tracks')return ok([{...song,id:'Lesnik',title:'Лесник',user:{id:'Kx',name:"Korol' i Shut"}}]);
+  return ok([]);
+ }};
+ const result=await searchCatalogueAudius(env,{query:'король и шут'});assert.deepEqual(result.items.map(t=>t.title),['Лесник']);assert.ok(queries.includes('король и шут'));assert.ok(queries.includes('korol i shut'));assert.ok(queries.includes('КиШ'));
+});
+
+test('artist matching tolerates accents, punctuation and small typos without requiring the artist in the song title',async()=>{
+ for(const [query,name]of [['Beyonce','Beyoncé'],['ACDC','AC/DC'],['Quuen','Queen']]){
+  clearArtistSearchCache();const env={...basic,AUDIUS_HTTP:async url=>{
+   if(url.pathname==='/v1/search/full')return Response.json({data:{tracks:[],users:[]}});
+   if(url.pathname==='/v1/users/search')return ok([{id:'Artist',name}]);
+   if(url.pathname==='/v1/users/Artist/tracks')return ok([{...song,title:'Different title',user:{id:'Artist',name}}]);
+   return ok([]);
+  }};
+  const result=await searchCatalogueAudius(env,{query});assert.equal(result.items.length,1,query);assert.equal(result.items[0].performer,name);
+ }
+});
+
+test('artist and song queries find the song without flooding the page with the whole artist catalogue',async()=>{
+ for(const query of ['Queen — Bohemian Rhapsody','Queen Bohemian Rhapsody']){
+  clearArtistSearchCache();const env={...basic,AUDIUS_HTTP:async url=>{
+   if(url.pathname==='/v1/search/full')return Response.json({data:{tracks:[],users:[]}});
+   if(url.pathname==='/v1/users/search')return ok([{id:'QueenId',name:'Queen'}]);
+   if(url.pathname==='/v1/users/QueenId/tracks')return ok([{...song,id:'Desired',title:'Bohemian Rhapsody',user:{id:'QueenId',name:'Queen'}},{...song,id:'Other',title:'Another One Bites The Dust',user:{id:'QueenId',name:'Queen'}}]);
+   return ok([]);
+  }};
+  const result=await searchCatalogueAudius(env,{query});assert.deepEqual(result.items.map(t=>t.id),['audius:Desired'],query);
+ }
+});
+
+test('artist pagination continues beyond the first 40, stays deduplicated and reuses a stable session',async()=>{
+ const offsets=[];const own=Array.from({length:120},(_,i)=>({...song,id:'Q'+i,user:{id:'Qx',name:'Queen'}}));
+ const env={...basic,AUDIUS_HTTP:async url=>{
+  if(url.pathname==='/v1/search/full')return Response.json({data:{tracks:[],users:[]}});
+  if(url.pathname==='/v1/users/search')return ok([{id:'Qx',name:'Queen'}]);
+  if(url.pathname==='/v1/users/Qx/tracks'){const offset=Number(url.searchParams.get('offset'));offsets.push(offset);return ok(own.slice(offset,offset+40));}
+  return ok([]);
+ }};
+ let page=await searchCatalogueAudius(env,{query:'Queen'}),tracks=[...page.items];const session=page.search_session;
+ while(page.next_offset!==null){page=await searchCatalogueAudius(env,{query:'Queen',offset:page.next_offset,session});tracks.push(...page.items);assert.ok(tracks.length<=120);}
+ assert.equal(tracks.length,120);assert.equal(new Set(tracks.map(t=>t.id)).size,120);assert.ok(offsets.includes(80));
+ await assert.rejects(searchCatalogueAudius(env,{query:'Other',offset:20,session}),error=>error.status===409);
+});
+
+test('search refresh fetches again while existing page sessions remain usable',async()=>{
+ let generation=0;const env={...basic,AUDIUS_HTTP:async url=>{
+  if(url.pathname==='/v1/users/search')return ok([]);
+  if(url.pathname==='/v1/search/full')return Response.json({data:{tracks:[],users:[]}});
+  return ok(Array.from({length:40},(_,i)=>({...song,id:'A'+i,title:'Song '+i+' generation '+generation})));
+ }};
+ const first=await searchCatalogueAudius(env,{query:'q'});generation=1;
+ const refreshed=await searchCatalogueAudius(env,{query:'q',refresh:true});assert.notEqual(first.search_session,refreshed.search_session);assert.ok(refreshed.items[0].title.includes('generation 1'));
+ const oldNext=await searchCatalogueAudius(env,{query:'q',offset:20,session:first.search_session});assert.ok(oldNext.items[0].title.includes('generation 0'));
+});
+
+test('a healthy empty user lookup cannot hide rate limits from both music indices',async()=>{
+ const env={...basic,AUDIUS_HTTP:async url=>url.pathname==='/v1/users/search'?ok([]):new Response(null,{status:429})};
+ await assert.rejects(searchCatalogueAudius(env,{query:'queen'}),error=>error.status===429);
 });

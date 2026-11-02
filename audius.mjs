@@ -9,7 +9,6 @@ export class AudiusError extends Error {
 const API='https://api.audius.co';
 const publicAgent=new https.Agent({keepAlive:true,maxSockets:16,maxFreeSockets:4,timeout:30000});
 const references=new Map();
-const artistSearchCache=new Map();
 const LIMIT=20*1024*1024;
 function configuration(env){
   for(const key of ['AUDIUS_API_KEY','AUDIUS_BEARER_TOKEN'])if(typeof env[key]!=='string'||!env[key]||env[key].length>8192||/[\s\x00-\x1f\x7f]/.test(env[key]))throw new AudiusError(503,'Поиск музыки ещё не подключён.');
@@ -73,24 +72,30 @@ function upstreamError(status){
   if(status===429)return new AudiusError(429,'Достигнут лимит поиска. Попробуйте немного позже.');
   return new AudiusError(502,'Музыкальный сервис временно недоступен.');
 }
-async function dataList(env,path,params){
+async function dataResult(env,path,params){
   configuration(env);
-  const response=await audiusFetch(apiUrl(env,path,params),{},env);
+  const response=await audiusFetch(apiUrl(env,path,params),{signal:env.AUDIUS_SEARCH_SIGNAL instanceof AbortSignal?env.AUDIUS_SEARCH_SIGNAL:undefined},env);
   if(!response.ok){await response.body?.cancel();throw upstreamError(response.status);}
   let result;try{const raw=await response.text();if(raw.length>2*1024*1024)throw Error();result=JSON.parse(raw);}catch{throw new AudiusError(502,'Не удалось прочитать результаты поиска.');}
+  if(!result||typeof result!=='object')throw new AudiusError(502,'Сервис вернул некорректные результаты.');
+  return result;
+}
+async function dataList(env,path,params){
+  const result=await dataResult(env,path,params);
   if(!Array.isArray(result.data))throw new AudiusError(502,'Сервис вернул некорректные результаты.');
   return result;
 }
-async function trackList(env,path,params,count){
-  const result=await dataList(env,path,params);
-  const items=result.data.slice(0,count).filter(t=>t&&typeof t.id==='string'&&/^[a-zA-Z0-9]+$/.test(t.id)).map(t=>{
+function normalizeTracks(data,count){
+  return data.slice(0,count).filter(t=>t&&typeof t.id==='string'&&/^[a-zA-Z0-9]+$/.test(t.id)).map(t=>{
     const gated=Boolean(t.is_stream_gated),playable=!gated&&t.is_streamable!==false;
     let artwork=null;for(const key of ['480x480','150x150','1000x1000']){try{if(t.artwork?.[key]){artwork=checkedUrl(t.artwork[key]).href;break;}}catch{}}
     const tags=typeof t.tags==='string'?[...new Set(t.tags.split(',').map(tag=>tag.trim().toLowerCase().slice(0,64)).filter(Boolean))].slice(0,20):[];
-    return {id:'audius:'+t.id,track_id:t.id,artist_id:typeof t.user?.id==='string'?t.user.id:null,artist_handle:typeof t.user?.handle==='string'?t.user.handle:'',title:typeof t.title==='string'?t.title.slice(0,1000):'Без названия',performer:typeof t.user?.name==='string'?t.user.name.slice(0,1000):'',genre:typeof t.genre==='string'?t.genre.slice(0,100):'',
-      mood:typeof t.mood==='string'?t.mood.slice(0,100):'',tags,bpm:Number.isFinite(t.bpm)&&t.bpm>=30&&t.bpm<=300?t.bpm:null,
-      duration:Number.isFinite(t.duration)?Math.max(0,t.duration):0,playable,unavailable_reason:playable?null:gated?'Трек требует отдельного доступа в Audius.':'Трек недоступен для воспроизведения.',artwork_url:artwork,mime:'audio/mpeg'};
+    return {id:'audius:'+t.id,track_id:t.id,artist_id:typeof t.user?.id==='string'?t.user.id:null,artist_handle:typeof t.user?.handle==='string'?t.user.handle:'',verified:Boolean(t.user?.is_verified),title:typeof t.title==='string'?t.title.slice(0,1000):'Без названия',performer:typeof t.user?.name==='string'?t.user.name.slice(0,1000):'',genre:typeof t.genre==='string'?t.genre.slice(0,100):'',mood:typeof t.mood==='string'?t.mood.slice(0,100):'',tags,bpm:Number.isFinite(t.bpm)&&t.bpm>=30&&t.bpm<=300?t.bpm:null,duration:Number.isFinite(t.duration)?Math.max(0,t.duration):0,playable,unavailable_reason:playable?null:gated?'Трек требует отдельного доступа в Audius.':'Трек недоступен для воспроизведения.',artwork_url:artwork,mime:'audio/mpeg'};
   });
+}
+async function trackList(env,path,params,count){
+  const result=await dataList(env,path,params);
+  const items=normalizeTracks(result.data,count);
   const total=Number.isSafeInteger(result.total)?result.total:Number.isSafeInteger(result.count)?result.count:null;
   return {items,total_count:total,received:result.data.length};
 }
@@ -98,61 +103,17 @@ export async function searchAudius(env,{query,offset=0,count=20}={}){
   configuration(env);
   if(typeof query!=='string'||!query.trim()||query.length>200||!Number.isInteger(offset)||offset<0||offset>10000)throw new AudiusError(400,'Введите название трека или исполнителя (до 200 символов).');
   const result=await trackList(env,'/tracks/search',{query:query.trim(),limit:String(count),offset:String(offset)},count);
-  return {items:result.items,total_count:result.total_count,next_offset:result.received>=count?offset+result.received:null};
+  return {items:result.items,total_count:result.total_count,received:result.received,next_offset:result.received>=count?offset+result.received:null};
 }
-const searchKey=value=>String(value||'').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
-function artistMatch(value,query){
-  const name=searchKey(value),q=searchKey(query);if(!name||!q)return 0;
-  if(name===q)return 3;if(name.startsWith(q+' '))return 2;
-  return (' '+name+' ').includes(' '+q+' ')?1:0;
+export async function searchFullAudius(env,{query,offset=0,count=40}){
+  const result=await dataResult(env,'/search/full',{query,kind:'all',sort_method:'relevant',limit:String(count),offset:String(offset)});
+  if(!Array.isArray(result.data?.tracks))throw new AudiusError(502,'Сервис вернул некорректные результаты.');
+  return {items:normalizeTracks(result.data.tracks,count),users:Array.isArray(result.data.users)?result.data.users:[],received:result.data.tracks.length};
 }
-async function artistTracks(env,query){
-  const cacheKey=JSON.stringify([env.AUDIUS_API_KEY,searchKey(query)]),cached=artistSearchCache.get(cacheKey);
-  if(cached&&cached.expires>Date.now())return cached.pending;
-  const entry={expires:Date.now()+180000};
-  entry.pending=(async()=>{
-    const users=await dataList(env,'/users/search',{query,limit:'10'});
-    const artists=users.data.filter(user=>user&&typeof user.id==='string'&&/^[a-zA-Z0-9]+$/.test(user.id)).map(user=>({user,score:Math.max(artistMatch(user.name,query),artistMatch(user.handle,query))})).filter(item=>item.score>0).sort((a,b)=>b.score-a.score||Number(Boolean(b.user.is_verified))-Number(Boolean(a.user.is_verified))).slice(0,3);
-    const results=await Promise.allSettled(artists.map(async({user})=>{
-      const result=await trackList(env,`/users/${user.id}/tracks`,{limit:'40',offset:'0'},40);
-      return result.items.filter(track=>track.artist_id?track.artist_id===user.id:Math.max(artistMatch(track.performer,query),artistMatch(track.artist_handle,query))>0);
-    }));
-    if(results.length&&results.every(result=>result.status==='rejected'))throw results[0].reason;
-    return [...new Map(results.filter(result=>result.status==='fulfilled').flatMap(result=>result.value).map(track=>[track.id,track])).values()];
-  })().catch(error=>{if(artistSearchCache.get(cacheKey)===entry)artistSearchCache.delete(cacheKey);throw error;});
-  while(artistSearchCache.size>=100)artistSearchCache.delete(artistSearchCache.keys().next().value);
-  artistSearchCache.set(cacheKey,entry);return entry.pending;
-}
-export function clearArtistSearchCache(){artistSearchCache.clear();}
-export async function searchCatalogueAudius(env,{query,offset=0,count=20}={}){
-  configuration(env);
-  if(typeof query!=='string'||!query.trim()||query.length>200||!Number.isInteger(offset)||offset<0||offset>10000)throw new AudiusError(400,'Введите название трека или исполнителя (до 200 символов).');
-  query=query.trim();let artists=[];
-  try{artists=await artistTracks(env,query);}catch{/* Track search remains available when artist discovery fails. */}
-  const items=artists.slice(offset,offset+count),known=new Set(artists.map(track=>track.id));
-  if(items.length===count)return {items,total_count:null,next_offset:offset+count};
-  let rawOffset=Math.max(0,offset-artists.length),more=true;
-  // A provider page can contain tracks already supplied by an artist's catalogue.
-  // Advance by consumed source rows rather than returned rows to avoid duplicates.
-  for(let pages=0;pages<4&&more&&items.length<count;pages++){
-    let result;
-    try{result=await searchAudius(env,{query,offset:rawOffset,count:40});}
-    catch(error){if(!items.length)throw error;more=false;break;}
-    const ordered=result.items.map((track,index)=>({track,index,score:Math.max(artistMatch(track.performer,query),artistMatch(track.artist_handle,query))})).sort((a,b)=>b.score-a.score||a.index-b.index);
-    // Keep pagination in provider order; artist ordering is done within the consumed page.
-    const remaining=count-items.length,accepted=[];let consumed=0;
-    for(const track of result.items){
-      consumed++;
-      if(!known.has(track.id)){accepted.push(track.id);known.add(track.id);}
-      if(accepted.length===remaining)break;
-    }
-    const acceptedIds=new Set(accepted);items.push(...ordered.filter(item=>acceptedIds.has(item.track.id)).map(item=>item.track));
-    const sourceRows=result.next_offset===null?result.items.length:result.next_offset-rawOffset;
-    rawOffset+=consumed;
-    more=consumed<sourceRows||result.next_offset!==null;
-    if(!sourceRows){more=false;break;}
-  }
-  return {items,total_count:null,next_offset:more?artists.length+rawOffset:null};
+export async function searchAudiusUsers(env,query){return (await dataList(env,'/users/search',{query,limit:'15'})).data;}
+export async function artistCatalogueAudius(env,id,{offset=0,count=40}={}){
+  if(typeof id!=='string'||!/^[a-zA-Z0-9]{1,128}$/.test(id))throw new AudiusError(400,'Некорректный запрос.');
+  return trackList(env,`/users/${id}/tracks`,{limit:String(count),offset:String(offset)},count);
 }
 export async function genreAudius(env,genre,count=40,offset=0){
   if(typeof genre!=='string'||!genre.trim()||genre.length>100)throw new AudiusError(400,'Некорректный жанр.');

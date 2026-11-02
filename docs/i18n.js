@@ -1,6 +1,7 @@
 // UI translations only: track titles and artist names are never passed through this table.
 (() => {
   const english={
+  "В каталоге Audius ничего не найдено.":"No results found in the Audius catalogue.",
   "Авто":"Auto",
   "Аватар недоступен.":"Avatar unavailable.",
   "Музыка":"Music",
