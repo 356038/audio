@@ -22,7 +22,8 @@ class Checks(unittest.TestCase):
         self.assertIn('127.0.0.1:6080', commands['web UI'])
         self.assertIn('127.0.0.1:5900', commands['web UI'])
         chrome=commands['Chrome']
-        self.assertIn('--user-data-dir=/private/profile', chrome)
+        self.assertIn('/private/profile', chrome)
+        self.assertTrue(any(arg.endswith('/vk-browser-driver.mjs') for arg in chrome))
         self.assertFalse(any('no-sandbox' in arg or 'remote-debugging' in arg or 'ignore-certificate' in arg for arg in chrome))
         self.assertIn('-auth', commands['display'])
         self.assertIn('-nolisten', commands['display'])

@@ -95,7 +95,7 @@ def check_unit():
 
 
 def dependencies():
-    required = ['google-chrome', 'Xvfb', 'xauth', 'x11vnc', 'websockify', 'openbox', 'dbus-run-session']
+    required = ['google-chrome', 'node', 'Xvfb', 'xauth', 'x11vnc', 'websockify', 'openbox', 'dbus-run-session']
     missing = [name for name in required if not shutil.which(name)]
     if missing:
         raise SetupError('Не установлены: ' + ', '.join(missing))
@@ -123,9 +123,7 @@ def browser_commands(authority, profile, password):
         ('VNC', ['x11vnc', '-display', DISPLAY, '-auth', str(authority), '-rfbauth', str(password),
                  '-localhost', '-no6', '-listen', '127.0.0.1', '-rfbport', '5900', '-forever', '-shared', '-noxdamage', '-quiet']),
         ('web UI', ['websockify', '--web=/usr/share/novnc', '127.0.0.1:6080', '127.0.0.1:5900']),
-        ('Chrome', ['dbus-run-session', '--', 'google-chrome', '--user-data-dir=' + str(profile),
-                    '--no-first-run', '--no-default-browser-check', '--disable-dev-shm-usage',
-                    '--start-maximized', 'https://vk.ru/audio']),
+        ('Chrome', ['dbus-run-session', '--', 'node', str(Path(__file__).with_name('vk-browser-driver.mjs')), str(profile)]),
     ]
 
 
@@ -211,7 +209,7 @@ def worker():
                 if process.poll() is not None:
                     raise SetupError('Завершился компонент: ' + name + '; exit=' + str(process.returncode)
                                      + '; причина=' + hints.get(name, 'unknown') + '. Песочница Chrome не отключалась.')
-            if not ready and time.monotonic() - started > 2 and ui_ready():
+            if not ready and time.monotonic() - started > 2 and ui_ready() and (RUNTIME / 'control.sock').is_socket():
                 (RUNTIME / 'ready').write_text('ready\n')
                 print('Браузер готов. Доступ только на 127.0.0.1:6080, пароль VNC включён.', flush=True)
                 ready = True
@@ -274,7 +272,7 @@ def start(script):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['start', 'stop', 'status', '_worker'])
+    parser.add_argument('action', choices=['start', 'restart', 'stop', 'status', '_worker'])
     args = parser.parse_args()
     if args.action == '_worker':
         worker()
@@ -282,7 +280,9 @@ def main():
     if os.geteuid() != 0:
         raise SetupError('Запустите на VPS от root.')
     check_unit()
-    if args.action == 'start':
+    if args.action in ('start', 'restart'):
+        if args.action == 'restart' and active():
+            run(['systemctl', 'stop', UNIT])
         start(Path(__file__).resolve())
     elif args.action == 'stop':
         run(['systemctl', 'stop', UNIT])
