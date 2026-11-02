@@ -60,33 +60,70 @@ export function observation(params){
   return null;
 }
 
-// Runs within the user's already authenticated page. Never reads/exports cookies.
-export async function pageSearch(query,userId){
+export function requestObservation(params){
+  const request=params?.request;if(!request)return null;
+  const entry=observation({response:{url:request.url,status:0,mimeType:'application/json'}});
+  if(entry?.kind!=='api')return null;
+  const allowed=['al','act','section','owner_id','q','search_q','search_query','query','offset','count','limit','start_from','section_id','ids','access_token','v','hash','audio_id','context','query_id'];
+  let parameters;try{const url=new URL(request.url);parameters=new URLSearchParams(url.search);
+    if(typeof request.postData==='string'&&request.postData.length<=32768)for(const [key,value]of new URLSearchParams(request.postData))parameters.append(key,value);
+  }catch{return null;}
+  const result={kind:'request',method:entry.method,http_method:request.method==='POST'?'POST':'GET',fields:allowed.filter(key=>parameters.has(key))};
+  const actions=['section','load_section','load_catalog_section','reload_audio','search','search_audio','search_suggestions','get_suggestions'];
+  if(actions.includes(parameters.get('act')))result.action=parameters.get('act');
+  const sections=['search','all','my','general','recoms','explore','search_audio','audio','playlist','trends','top'];
+  if(sections.includes(parameters.get('section')))result.section=parameters.get('section');
+  return result;
+}
+
+// Reads rendered music rows rather than assuming a legacy API returned a search.
+export function readTrackRows(query,doc=document){
+  const normalize=value=>String(value||'').normalize('NFKD').toLowerCase().replace(/\p{M}/gu,'').replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+  const clean=value=>String(value||'').replace(/[\p{Cc}\p{Cf}]/gu,'').trim().slice(0,180);
+  const nodes=[...doc.querySelectorAll('.audio_row, .audio_item, [data-audio]')].slice(0,200);
+  const tracks=[];let parsed=0,blank=0;const seen=new Set();
+  for(const node of nodes){
+    const text=selector=>node.querySelector(selector)?.textContent||'';
+    let artist=text('.audio_row__performers, ._audio_row__performers, .audio_item__performer, .audio_row__performer');
+    let title=text('.audio_row__title_inner, ._audio_row__title_inner, .audio_item__title, .audio_row__title');
+    let duration=0,id=node.getAttribute('data-full-id');
+    const time=text('.audio_row__duration, .audio_item__duration').trim();
+    if(/^\d{1,2}:\d{2}(?::\d{2})?$/.test(time))duration=time.split(':').reduce((seconds,part)=>seconds*60+Number(part),0);
+    let data;try{const raw=node.getAttribute('data-audio');if(raw&&raw.length<32768)data=JSON.parse(raw);}catch{}
+    if(Array.isArray(data)){
+      if(!title&&typeof data[3]==='string')title=data[3].replace(/<[^>]*>/g,'');
+      if(!artist&&typeof data[4]==='string')artist=data[4].replace(/<[^>]*>/g,'');
+      if(!duration&&Number.isFinite(data[5]))duration=data[5];
+      if(!id&&Number.isSafeInteger(data[0])&&Number.isSafeInteger(data[1]))id=data[1]+'_'+data[0];
+    }else if(data&&typeof data==='object'){
+      if(!title&&typeof data.title==='string')title=data.title;
+      if(!artist&&typeof data.artist==='string')artist=data.artist;
+      if(!duration&&Number.isFinite(data.duration))duration=data.duration;
+    }
+    artist=clean(artist);title=clean(title);if(!artist&&!title)continue;parsed++;
+    if(!title){blank++;continue;}
+    const key=artist+'\0'+title;if(seen.has(key))continue;seen.add(key);
+    const q=normalize(query),artistName=normalize(artist),titleName=normalize(title);
+    const matches=text=>(' '+text+' ').includes(' '+q+' ');
+    if(!matches(artistName)&&!matches(titleName))continue;
+    const rank=artistName===q?3:matches(artistName)?2:1;
+    tracks.push({artist,title,duration:duration>0&&duration<86400?duration:0,...(/^-?\d+_\d+$/.test(id||'')?{id}:{}),rank});
+  }
+  tracks.sort((a,b)=>b.rank-a.rank);
+  return {received:nodes.length,parsed_rows:parsed,blank_titles:blank,matched:tracks.length,
+    tracks:tracks.slice(0,8).map(({rank,...track})=>track)};
+}
+
+// Runs on the native search page. Never reads/exports cookies or web API bodies.
+export function pageSearch(query,userId,readRows){
   if(location.protocol!=='https:'||!['vk.ru','vk.com'].includes(location.hostname))return {ok:false,code:'vk_page_required'};
   const current=Number(window.vk?.id);
   if(current===0)return {ok:false,code:'login_required'};
   if(Number.isSafeInteger(current)&&current>0&&current!==userId)return {ok:false,code:'different_account'};
-  const response=await fetch('/al_audio.php',{method:'POST',credentials:'same-origin',redirect:'error',
-    headers:{'Content-Type':'application/x-www-form-urlencoded','X-Requested-With':'XMLHttpRequest'},
-    body:new URLSearchParams({al:'1',act:'section',claim:'0',is_layer:'0',owner_id:String(userId),section:'search',q:query}),signal:AbortSignal.timeout(12000)});
-  if(response.status!==200){await response.body?.cancel();return {ok:false,code:'provider_http_error',status:response.status};}
-  const reader=response.body.getReader();const chunks=[];let total=0;
-  while(true){const item=await reader.read();if(item.done)break;total+=item.value.length;if(total>2*1024*1024){await reader.cancel();return {ok:false,code:'response_too_large'};}chunks.push(item.value);}
-  const data=new Uint8Array(total);let offset=0;for(const chunk of chunks){data.set(chunk,offset);offset+=chunk.length;}
-  let value;try{value=JSON.parse(new TextDecoder().decode(data).trim().replace(/^<!--/,''));}catch{return {ok:false,code:'unexpected_response'};}
-  const payload=value?.payload;
-  const rawCode=Array.isArray(payload)?payload[0]:null;
-  const code=typeof rawCode==='number'&&Number.isInteger(rawCode)&&Math.abs(rawCode)<100000?rawCode:
-    typeof rawCode==='string'&&/^-?\d{1,5}$/.test(rawCode)?Number(rawCode):null;
-  if(code!==0)return {ok:false,code:'provider_web_error',payload_code:code};
-  const playlist=payload?.[1]?.[1]?.playlist;
-  if(playlist===undefined||playlist!==null&&!Array.isArray(playlist.list))return {ok:false,code:'unexpected_response'};
-  const clean=raw=>{const field=document.createElement('textarea');field.innerHTML=String(raw||'').replace(/<[^>]*>/g,'');return field.value.replace(/[\p{Cc}\p{Cf}]/gu,'').slice(0,180);};
-  const rows=playlist?.list||[];const tracks=[];
-  for(const row of rows){if(!Array.isArray(row)||typeof row[3]!=='string'||typeof row[4]!=='string')continue;
-    tracks.push({artist:clean(row[4]),title:clean(row[3]),duration:Number.isFinite(row[5])&&row[5]>0?row[5]:0});if(tracks.length===8)break;}
-  if(rows.length&&!tracks.length)return {ok:false,code:'unexpected_response'};
-  return {ok:true,received:rows.length,tracks,playback_verified:false};
+  if(new URL(location.href).searchParams.get('q')!==query)return {ok:false,code:'query_not_reflected'};
+  const result=readRows(query);
+  return {ok:result.matched>0,...(result.matched>0?{}:{code:result.parsed_rows?'query_not_reflected':'music_rows_not_found'}),
+    query,mode:'native_search_page',...result,playback_verified:false};
 }
 
 export function probeInput(body){
@@ -98,6 +135,9 @@ export function probeInput(body){
 export async function createControl(rpc,socketPath=CONTROL_SOCKET){
   const sessions=new Map();const recent=[];let busy=false;let scanning=false;
   rpc.on('event',message=>{
+    if(message.method==='Network.requestWillBeSent'){
+      const entry=requestObservation(message.params);if(entry){recent.push(entry);while(recent.length>20)recent.shift();}
+    }
     if(message.method==='Network.responseReceived'){
       const entry=observation(message.params);if(entry){recent.push(entry);while(recent.length>20)recent.shift();}
     }
@@ -127,9 +167,18 @@ export async function createControl(rpc,socketPath=CONTROL_SOCKET){
         let targets=[];for(let i=0;i<20;i++){targets=await pages();if(targets.length)break;await new Promise(resolve=>setTimeout(resolve,250));}
         if(!targets.length){json(409,{ok:false,code:'open_vk_music_page',observed:recent});return;}
         const sessionId=sessions.get(targets[0].targetId);
-        const result=await rpc.call('Runtime.evaluate',{expression:`(${pageSearch.toString()})(${JSON.stringify(input.query)},${input.user_id})`,awaitPromise:true,returnByValue:true},sessionId,16000);
-        if(result.exceptionDetails){json(502,{ok:false,code:'browser_request_failed',observed:recent});return;}
-        json(200,{...result.result?.value,observed:recent});
+        const origin=new URL(targets[0].url).origin;
+        const navigation=await rpc.call('Page.navigate',{url:origin+'/audios'+input.user_id+'?q='+encodeURIComponent(input.query)},sessionId,5000);
+        if(navigation.errorText){json(502,{ok:false,code:'native_page_navigation_failed',observed:recent});return;}
+        let value={ok:false,code:'native_page_not_ready'};
+        const deadline=Date.now()+11000;
+        for(let attempt=0;attempt<24&&Date.now()<deadline;attempt++){
+          await new Promise(resolve=>setTimeout(resolve,500));
+          let result;try{result=await rpc.call('Runtime.evaluate',{expression:`(${pageSearch.toString()})(${JSON.stringify(input.query)},${input.user_id},${readTrackRows.toString()})`,returnByValue:true},sessionId,Math.max(100,Math.min(2000,deadline-Date.now())));}catch{continue;}
+          if(result.exceptionDetails)continue;value=result.result?.value||value;
+          if(value.ok||value.code==='login_required'||value.code==='different_account')break;
+        }
+        json(200,{...value,observed:recent});
       }finally{busy=false;}
     }catch{if(!res.headersSent)json(503,{ok:false,code:'browser_unavailable'});else res.destroy();}
   });

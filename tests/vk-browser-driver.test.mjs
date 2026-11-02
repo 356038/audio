@@ -7,7 +7,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import http from 'node:http';
 import vm from 'node:vm';
-import {PipeRpc,chromeArgs,isMusicPage,observation,pageSearch,probeInput,createControl} from '../scripts/vk-browser-driver.mjs';
+import {PipeRpc,chromeArgs,isMusicPage,observation,requestObservation,readTrackRows,pageSearch,probeInput,createControl} from '../scripts/vk-browser-driver.mjs';
 
 test('Chrome uses private inherited pipes, preserves sandbox and restricts the origin',()=>{
  const args=chromeArgs('/private/profile');
@@ -41,30 +41,32 @@ test('network observations never expose URLs, headers, query tokens or unrelated
  assert.ok(!JSON.stringify(audio).includes('PRIVATE'));
 });
 
-async function evaluate(query,response,user=42){
- const calls=[];
- const context=vm.createContext({location:{protocol:'https:',hostname:'vk.ru'},window:{vk:{id:user}},
-  document:{createElement:()=>({set innerHTML(v){this.value=v;}})},
-  URLSearchParams,AbortSignal,TextDecoder,Uint8Array,fetch:async(...args)=>{calls.push(args);return response;}});
- const result=await vm.runInContext(`(${pageSearch.toString()})(${JSON.stringify(query)},42)`,context);
- return {result:JSON.parse(JSON.stringify(result)),calls};
+function row(artist,title,duration='3:20',id='1_2'){
+ return {querySelector:selector=>({textContent:selector.includes('performer')?artist:selector.includes('title')?title:duration}),getAttribute:key=>key==='data-full-id'?id:null};
 }
-test('search executes inside the authenticated page, treats queries as data, and emits metadata only',async()=>{
- const row=[123,456,'https://private/?hash=PRIVATE','Song','Queen',180];
- const query='Queen "); throw Error("injected"); //';
- const {result,calls}=await evaluate(query,Response.json({payload:[0,[0,{playlist:{list:[row]}}]]}));
- assert.deepEqual(result,{ok:true,received:1,tracks:[{artist:'Queen',title:'Song',duration:180}],playback_verified:false});
- assert.equal(calls[0][0],'/al_audio.php');assert.equal(calls[0][1].credentials,'same-origin');assert.equal(calls[0][1].redirect,'error');
- assert.equal(calls[0][1].body.get('q'),query);assert.ok(!JSON.stringify(result).includes('PRIVATE'));
- const unauthenticated=await evaluate('Queen',Response.json({}),0);assert.equal(unauthenticated.result.code,'login_required');assert.equal(unauthenticated.calls.length,0);
- const other=await evaluate('Queen',Response.json({}),99);assert.equal(other.result.code,'different_account');assert.equal(other.calls.length,0);
+function evaluate(query,rows,user=42,urlQuery=query){
+ const context=vm.createContext({location:{protocol:'https:',hostname:'vk.ru',href:'https://vk.ru/audios42?q='+encodeURIComponent(urlQuery)},window:{vk:{id:user}},
+  document:{querySelectorAll:()=>rows},URL});
+ return JSON.parse(JSON.stringify(vm.runInContext(`(${pageSearch.toString()})(${JSON.stringify(query)},42,${readTrackRows.toString()})`,context)));
+}
+test('native-page search keeps Cyrillic titles, prioritizes the artist, and rejects the observed unrelated chart',()=>{
+ const result=evaluate('Queen',[row('ABBA','Dancing Queen','3:50','1_3'),row('Queen','The Show Must Go On','4:23'),row('INSTASAMKA','AGENT GIRL')]);
+ assert.equal(result.ok,true);assert.equal(result.matched,2);assert.equal(result.tracks[0].artist,'Queen');assert.equal(result.tracks[0].duration,263);
+ const cyrillic=evaluate('Король и Шут',[row('Король и Шут','Кукла колдуна')]);
+ assert.equal(cyrillic.tracks[0].title,'Кукла колдуна');
+ const chart=evaluate('Queen',[row('INSTASAMKA','AGENT GIRL'),row('Markul',''),row('shadowraze, genjutsu','1000-7')]);
+ assert.equal(chart.ok,false);assert.equal(chart.code,'query_not_reflected');assert.equal(chart.tracks.length,0);assert.equal(chart.blank_titles,1);
+ assert.equal(evaluate('Queen',[row('Queen','Song')],42,'Rammstein').code,'query_not_reflected');
+ assert.equal(evaluate('Queen',[],0).code,'login_required');assert.equal(evaluate('Queen',[],99).code,'different_account');
+ assert.equal(evaluate('Queen',[]).code,'music_rows_not_found');
 });
 
-test('provider errors are bounded and do not become empty successful playlists',async()=>{
- assert.deepEqual((await evaluate('Queen',Response.json({payload:[3,['https://login/?token=PRIVATE']]}))).result,{ok:false,code:'provider_web_error',payload_code:3});
- assert.equal((await evaluate('Queen',new Response('<html>PRIVATE login</html>'))).result.code,'unexpected_response');
- let cancelled=false;const body=new ReadableStream({start(controller){controller.enqueue(new Uint8Array(2*1024*1024+1));},cancel(){cancelled=true;}});
- assert.equal((await evaluate('Queen',new Response(body))).result.code,'response_too_large');assert.equal(cancelled,true);
+test('native request discovery exports field names and fixed action names without credentials or search values',()=>{
+ const result=requestObservation({request:{url:'https://vk.ru/al_audio.php?token=PRIVATE',method:'POST',headers:{Cookie:'PRIVATE'},postData:'act=section&section=search&search_q=PRIVATE&hash=PRIVATE&owner_id=123'}});
+ assert.deepEqual(result,{kind:'request',method:'al_audio.php',http_method:'POST',fields:['act','section','owner_id','search_q','hash'],action:'section',section:'search'});
+ assert.ok(!JSON.stringify(result).includes('PRIVATE'));
+ assert.equal(requestObservation({request:{url:'https://login.vk.ru',postData:'password=PRIVATE'}}),null);
+ const malicious='Queen "); throw Error("PRIVATE"); //';assert.equal(evaluate(malicious,[]).ok,false);
  for(const data of [{query:'Queen',user_id:0},{query:'\nQueen',user_id:42},{query:'Queen',user_id:'42'}])assert.throws(()=>probeInput(data));
 });
 
@@ -74,7 +76,7 @@ test('admin control socket is private and offers fixed probes rather than arbitr
  rpc.call=async(method,params,session)=>{calls.push({method,params,session});
   if(method==='Target.getTargets')return {targetInfos:[{type:'page',url:'https://vk.ru/audio',targetId:'page'}]};
   if(method==='Target.attachToTarget')return {sessionId:'session'};
-  if(method==='Runtime.evaluate')return {result:{value:{ok:true,received:0,tracks:[],playback_verified:false}}};
+  if(method==='Runtime.evaluate')return {result:{value:{ok:true,received:1,matched:1,tracks:[{artist:'Queen',title:'Song'}],playback_verified:false}}};
   return {};
  };
  let server;
@@ -84,6 +86,7 @@ test('admin control socket is private and offers fixed probes rather than arbitr
   assert.equal((await request({expression:'document.cookie'})).status,400);assert.equal(calls.length,0);
   const response=await request({query:'Queen',user_id:42,expression:'document.cookie'});assert.equal(response.body.ok,true);
   const expression=calls.find(call=>call.method==='Runtime.evaluate').params.expression;
-  assert.ok(expression.includes('async function pageSearch'));assert.ok(!expression.includes('document.cookie'));
+  assert.ok(expression.includes('function pageSearch'));assert.ok(!expression.includes('document.cookie'));
+  const navigation=calls.find(call=>call.method==='Page.navigate');assert.equal(navigation.params.url,'https://vk.ru/audios42?q=Queen');
  }finally{if(server)await new Promise(resolve=>server.close(resolve));await rm(dir,{recursive:true,force:true});}
 });
