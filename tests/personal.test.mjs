@@ -20,6 +20,33 @@ const request=(path,body={},user=42)=>new Request(origin+path,{method:'POST',hea
 const descriptor={id:'audius:A1',source:'audius',track_id:'A1',mime:'audio/mpeg',title:'Song',performer:'Artist',genre:'Electronic',duration:60,playable:true};
 const song=(id,artist='Artist',genre='Electronic',extra={})=>({id,title:id,duration:60,genre,user:{name:artist},is_streamable:true,...extra});
 
+test('retired Archive records stay on disk but cannot appear in library pages, counts or listening history',async()=>{
+ const store=new PersonalStore(':memory:');
+ try{
+  for(let i=0;i<55;i++)store.save(42,{...descriptor,id:'supported-'+i},true);
+  for(let i=0;i<60;i++){
+   const old={id:'archive:'+i,source:'archive',title:'Retired',performer:'Old artist'};
+   store.save(42,old,true);store.record(42,old,'retired-session-'+i,20);
+  }
+  store.record(42,descriptor,'supported-session',20);
+  assert.equal(store.count(42),55);assert.equal(store.ids(42).length,55);
+  assert.equal(store.list(42).length,50);assert.equal(store.list(42,50).length,5);
+  assert.equal(store.has(42,'archive:0'),false);
+  assert.deepEqual(store.recent(42).map(t=>t.id),[descriptor.id]);
+  assert.equal(store.db.prepare('SELECT count(*) AS n FROM saved').get().n,115);
+  globalThis.fetch=async()=>{throw new Error('Retired sources must not contact a provider');};
+  const payload=Buffer.from(JSON.stringify({user:42,file:'old-reference',source:'archive',type:'audio',exp:Math.floor(Date.now()/1000)+300})).toString('base64url');
+  const signature=createHmac('sha256',bot).update(`wave-stream:${payload}`).digest('hex');
+  for(const path of ['/api/stream','/api/prepare','/api/artwork']){
+   const response=await api.fetch(new Request(`${origin}${path}?ticket=${payload}.${signature}`),{BOT_TOKEN:bot});
+   assert.equal(response.status,410);
+  }
+  const library=await(await api.fetch(request('/api/library'),{BOT_TOKEN:bot,PERSONAL_STORE:store})).json();
+  assert.equal(library.total_count,55);assert.equal(library.next_offset,50);
+  assert.ok(library.tracks.every(track=>track.source==='audius'));
+ }finally{store.close();}
+});
+
 test('personal saves persist, remain private, paginate, and history retains the last 15 distinct tracks',async()=>{
  const dir=await mkdtemp(join(tmpdir(),'wave-personal-'));const path=join(dir,'library.sqlite');let store;
  try{

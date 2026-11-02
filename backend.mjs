@@ -12,7 +12,6 @@ import {audiusFetch} from './audius.mjs';
 import {PersonalStore} from './personal-store.mjs';
 
 export function createServer(env = process.env) {
-  env={...env,WAVE_ARCHIVE_ENABLED:env.WAVE_ARCHIVE_ENABLED??'1'};
   const publicOrigin = env.FRONTEND_ORIGIN;
   if (!publicOrigin || !/^https?:\/\/[^/]+$/.test(publicOrigin)) throw new Error('Set FRONTEND_ORIGIN to the public HTTPS origin (without a trailing slash).');
   const staticFiles = new Map([
@@ -34,7 +33,7 @@ export function createServer(env = process.env) {
       if (req.method === 'GET' && url.pathname === '/config.js') {
         res.writeHead(200, {'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-store'});
         const theme = env.WAVE_THEME === 'default' ? 'default' : 'halloween';
-        res.end(`window.WAVE_API_BASE = ${JSON.stringify(publicOrigin)};window.WAVE_THEME = ${JSON.stringify(theme)};window.WAVE_SEARCH_CONFIGURED = ${Boolean(env.AUDIUS_API_KEY&&env.AUDIUS_BEARER_TOKEN)||env.WAVE_ARCHIVE_ENABLED==='1'};`); return;
+        res.end(`window.WAVE_API_BASE = ${JSON.stringify(publicOrigin)};window.WAVE_THEME = ${JSON.stringify(theme)};window.WAVE_SEARCH_CONFIGURED = ${Boolean(env.AUDIUS_API_KEY&&env.AUDIUS_BEARER_TOKEN)};`); return;
       }
       if (req.method === 'GET' && staticFiles.has(url.pathname)) {
         const [name, type] = staticFiles.get(url.pathname);

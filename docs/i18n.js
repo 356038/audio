@@ -1,8 +1,6 @@
 // UI translations only: track titles and artist names are never passed through this table.
 (() => {
   const english={
-  "Поиск музыки":"Search music",
-  "Результаты поиска":"Search results",
   "AI-версия":"AI version",
   "Кавер":"Cover",
   "Ремикс":"Remix",

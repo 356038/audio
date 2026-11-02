@@ -14,7 +14,6 @@ node tests/http.test.mjs
 node tests/audius.test.mjs
 node tests/track-versions.test.mjs
 node tests/search-precision.test.mjs
-node tests/archive.test.mjs
 node tests/personal.test.mjs
 node tests/i18n.test.mjs
 

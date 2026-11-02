@@ -203,7 +203,6 @@ html.player-visible{height:100%;overflow:hidden;overscroll-behavior:none}
 @media(max-height:650px){.track-dialog .full-player{padding-left:22px;padding-right:22px}.track-dialog .full-header{margin-bottom:8px}.track-dialog .full-track-meta{margin-top:10px}.track-dialog .full-track-meta h2{font-size:18px}.track-dialog .seek-area{margin-top:8px}.track-dialog .full-controls{margin-top:8px}.track-dialog .full-controls .playback-button{width:52px;height:52px}.track-dialog .full-status{margin-top:8px}}
 
 /* Section buttons form a fixed row, rather than a horizontally scrollable strip. */
-.catalogue-credit{grid-column:1/-1;display:block;font-size:10px;color:var(--muted);line-height:1.5}.track-row>.catalogue-credit{padding:0 8px 5px 76px}.catalogue-credit a{color:inherit;text-decoration:underline;text-underline-offset:2px}#full-source{margin-top:6px}
 .source-tabs{display:grid;grid-template-columns:1.05fr 1.1fr 1.25fr .8fr;width:100%;overflow:hidden;overscroll-behavior-x:none;touch-action:pan-y}
 .source-tabs button{width:100%;min-width:0;overflow:hidden;text-overflow:ellipsis;padding-left:6px;padding-right:6px;touch-action:pan-y}
 .source-tabs:has(#tab-catalog[hidden]){grid-template-columns:repeat(3,minmax(0,1fr))}
