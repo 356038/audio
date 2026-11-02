@@ -13,15 +13,34 @@ export function readTrackRows(query,doc=document){
   }
   const selector='.audio_row, .audio_item, [data-audio], [class*="AudioRow" i], [class*="AudioItem" i], [class*="TrackRow" i], [class*="MusicTrack" i], [data-testid*="AudioRow" i], [data-testid*="AudioItem" i], [data-testid*="TrackRow" i], [data-testid*="MusicTrack" i], [data-testid*="audio-row" i], [data-testid*="audio_row" i], [data-testid*="audio-track" i], [data-testid*="track-row" i]';
   const nodes=[];for(const root of roots){for(const node of root.querySelectorAll(selector)){nodes.push(node);if(nodes.length===300)break;}if(nodes.length===300)break;}
-  const tracks=[];let parsed=0,blank=0;const seen=new Set();
+  const artistSelector='.audio_row__performers, ._audio_row__performers, .audio_item__performer, .audio_row__performer, [class*="performer" i], [class*="artist" i], [data-testid*="performer" i], [data-testid*="artist" i], [data-testid*="subtitle" i], [class*="subtitle" i]';
+  const titleSelector='.audio_row__title_inner, ._audio_row__title_inner, .audio_item__title, .audio_row__title, [class*="title" i]:not([class*="subtitle" i]), [data-testid*="title" i]:not([data-testid*="subtitle" i])';
+  const durationSelector='.audio_row__duration, .audio_item__duration, [class*="duration" i], [data-testid*="duration" i]';
+  const find=(node,selector)=>node.matches?.(selector)?node:node.querySelector(selector);
+  const tracks=[];let parsed=0,blank=0,missingArtist=0;const seen=new Set();
   for(const node of nodes){
-    const text=selector=>node.querySelector(selector)?.textContent||'';
-    let artist=text('.audio_row__performers, ._audio_row__performers, .audio_item__performer, .audio_row__performer, [class*="performer" i], [class*="artist" i], [data-testid*="performer" i], [data-testid*="artist" i]');
-    let title=text('.audio_row__title_inner, ._audio_row__title_inner, .audio_item__title, .audio_row__title, [class*="title" i], [data-testid*="title" i]');
-    let duration=0,id=node.getAttribute('data-full-id');
-    const time=text('.audio_row__duration, .audio_item__duration, [class*="duration" i], [data-testid*="duration" i]').trim();
+    const titleNode=find(node,titleSelector);let scope=node;
+    // A testid may label only the title, not its complete card. Find the nearest
+    // group with that title and a performer/subtitle; never cross another song.
+    if(titleNode?.parentElement){
+      let parent=titleNode,best;
+      for(let depth=0;depth<6&&parent;depth++,parent=parent.parentElement){
+        if(parent.getAttribute('data-testid')?.startsWith('TopAudioPlayer'))break;
+        const otherTitles=[...parent.querySelectorAll(titleSelector)].filter(other=>other!==titleNode&&!other.contains(titleNode)&&!titleNode.contains(other));
+        if(otherTitles.length)break;
+        if(find(parent,artistSelector)){best=parent;if(find(parent,durationSelector))break;}
+      }
+      if(best)scope=best;
+    }
+    let artist=find(scope,artistSelector)?.textContent||'';
+    let title=titleNode?.textContent||'';
+    let duration=0,id=scope.getAttribute('data-full-id')||node.getAttribute('data-full-id');
+    for(const key of ['data-audio-id','data-track-id','data-id']){
+      const value=scope.getAttribute(key);if(!id&&/^-?\d+_\d+$/.test(value||''))id=value;
+    }
+    const time=(find(scope,durationSelector)?.textContent||'').trim();
     if(/^\d{1,2}:\d{2}(?::\d{2})?$/.test(time))duration=time.split(':').reduce((seconds,part)=>seconds*60+Number(part),0);
-    let data;try{const raw=node.getAttribute('data-audio');if(raw&&raw.length<32768)data=JSON.parse(raw);}catch{}
+    let data;try{const raw=scope.getAttribute('data-audio')||node.getAttribute('data-audio');if(raw&&raw.length<32768)data=JSON.parse(raw);}catch{}
     if(Array.isArray(data)){
       if(!title&&typeof data[3]==='string')title=data[3].replace(/<[^>]*>/g,'');
       if(!artist&&typeof data[4]==='string')artist=data[4].replace(/<[^>]*>/g,'');
@@ -34,6 +53,7 @@ export function readTrackRows(query,doc=document){
     }
     artist=clean(artist);title=clean(title);if(!artist&&!title)continue;parsed++;
     if(!title){blank++;continue;}
+    if(!artist){missingArtist++;continue;}
     const key=artist+'\0'+title;if(seen.has(key))continue;seen.add(key);
     const q=normalize(query),artistName=normalize(artist),titleName=normalize(title);
     const matches=text=>(' '+text+' ').includes(' '+q+' ');
@@ -42,7 +62,8 @@ export function readTrackRows(query,doc=document){
     tracks.push({artist,title,duration:duration>0&&duration<86400?duration:0,...(/^-?\d+_\d+$/.test(id||'')?{id}:{}),rank});
   }
   tracks.sort((a,b)=>b.rank-a.rank);
-  return {received:nodes.length,parsed_rows:parsed,blank_titles:blank,matched:tracks.length,
+  return {received:nodes.length,parsed_rows:parsed,blank_titles:blank,missing_artist:missingArtist,matched:tracks.length,
+    ...(!tracks.length&&missingArtist?{code:'incomplete_track_metadata'}:{}),
     tracks:tracks.slice(0,8).map(({rank,...track})=>track)};
 }
 

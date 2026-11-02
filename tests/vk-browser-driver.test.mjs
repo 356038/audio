@@ -61,6 +61,12 @@ test('native-page search keeps Cyrillic titles, prioritizes the artist, and reje
  assert.equal(evaluate('Queen',[]).code,'music_rows_not_found');
 });
 
+test('the observed title-only Queen matches cannot be accepted as complete music records',()=>{
+ const result=evaluate('Queen',[row('','Dancing Queen','0:00'),row('','Rock And Roll Queen','0:00'),row('','QUEEN','3:14')]);
+ assert.equal(result.ok,false);assert.equal(result.code,'incomplete_track_metadata');
+ assert.equal(result.missing_artist,3);assert.deepEqual(result.tracks,[]);
+});
+
 test('native request discovery exports field names and fixed action names without credentials or search values',()=>{
  const result=requestObservation({request:{url:'https://vk.ru/al_audio.php?token=PRIVATE',method:'POST',headers:{Cookie:'PRIVATE'},postData:'act=section&section=search&search_q=PRIVATE&hash=PRIVATE&owner_id=123'}});
  assert.deepEqual(result,{kind:'request',method:'al_audio.php',http_method:'POST',fields:['act','section','owner_id','search_q','hash'],action:'section',section:'search'});
